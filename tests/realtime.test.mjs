@@ -45,7 +45,7 @@ describe('realtime fan-out', () => {
         `${misses}/${FANOUT_CLIENTS} sockets missed the message — fan-out is not crossing instances`,
       );
     } finally {
-      for (const c of clients) c.close();
+      await Promise.all(clients.map((c) => c.close()));
     }
   });
 
@@ -68,7 +68,7 @@ describe('realtime fan-out', () => {
         assert.equal(copies, 1, `socket ${i} received ${copies} copies of the same message`);
       }
     } finally {
-      for (const c of clients) c.close();
+      await Promise.all(clients.map((c) => c.close()));
     }
   });
 
@@ -86,8 +86,8 @@ describe('realtime fan-out', () => {
       const misses = received.filter((r) => r === undefined).length;
       assert.equal(misses, 0, `${misses}/${FANOUT_CLIENTS} sockets missed the typing event`);
     } finally {
-      typist.close();
-      for (const w of watchers) w.close();
+      await typist.close();
+      await Promise.all(watchers.map((w) => w.close()));
     }
   });
 
@@ -107,7 +107,7 @@ describe('realtime fan-out', () => {
       );
       assert.equal(received.filter((r) => r === undefined).length, 0);
     } finally {
-      for (const s of sessions) s.close();
+      await Promise.all(sessions.map((s) => s.close()));
     }
   });
 
@@ -158,7 +158,7 @@ describe('realtime fan-out', () => {
         'should receive events for the newly subscribed conversation',
       );
     } finally {
-      client.close();
+      await client.close();
     }
   });
 
@@ -175,7 +175,7 @@ describe('realtime fan-out', () => {
       const copies = watcher.events.filter((e) => e.type === 'message' && e.clientId === clientId).length;
       assert.equal(copies, 1, 'a retried send must not put a second copy in everyone\'s window');
     } finally {
-      watcher.close();
+      await watcher.close();
     }
   });
 });

@@ -177,7 +177,7 @@ describe('finding E — authorization', () => {
       );
       assert.equal(leaked, undefined, 'a non-participant must not receive the message');
     } finally {
-      carol.close();
+      await carol.close();
     }
   });
 });

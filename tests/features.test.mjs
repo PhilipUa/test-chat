@@ -159,7 +159,7 @@ describe('tasks/search.md', () => {
     assert.ok(stem.body.results.length >= 1, 'expected a stemmed match for meeting/meetings');
   });
 
-  it('falls back to substring matching for a partial word', async () => {
+  it('falls back to indexed prefix matching for a partial word', async () => {
     const conv = await freshConversation();
     const token = `parsnip${Date.now()}`;
     await post('/api/messages', {
@@ -170,7 +170,9 @@ describe('tasks/search.md', () => {
     const partial = token.slice(0, 10);
     const res = await get(`/api/search?q=${partial}&userId=1`);
     assert.ok(res.body.results.length >= 1, 'a partial word should still find the message');
-    assert.equal(res.body.results[0].matchedBy, 'substring');
+    // Was 'substring' when the fallback was an unindexed regex over the body; it's now an
+    // anchored prefix match against the bodyTokens index.
+    assert.equal(res.body.results[0].matchedBy, 'prefix');
   });
 
   it('never returns messages from conversations the caller is not in', async () => {
@@ -236,8 +238,8 @@ describe('tasks/typing-indicator.md', () => {
       const echoed = await alice.waitFor((e) => e.type === 'typing' && e.userId === 1, 1_000);
       assert.equal(echoed, undefined, 'the typist must not see their own indicator');
     } finally {
-      alice.close();
-      bob.close();
+      await alice.close();
+      await bob.close();
     }
   });
 
@@ -255,8 +257,8 @@ describe('tasks/typing-indicator.md', () => {
         'a stop event should be delivered so the indicator clears promptly',
       );
     } finally {
-      alice.close();
-      bob.close();
+      await alice.close();
+      await bob.close();
     }
   });
 
@@ -270,8 +272,8 @@ describe('tasks/typing-indicator.md', () => {
       const leaked = await bob.waitFor((e) => e.type === 'typing' && e.userId === 3, 1_500);
       assert.equal(leaked, undefined, 'a non-participant must not be able to broadcast typing');
     } finally {
-      bob.close();
-      carol.close();
+      await bob.close();
+      await carol.close();
     }
   });
 });

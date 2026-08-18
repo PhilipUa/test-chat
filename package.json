@@ -8,8 +8,9 @@
     "dev": "tsx watch src/index.ts",
     "seed": "tsx docker/db/seed.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"tests/**/*.test.mjs\"",
-    "probe:realtime": "node scripts/probe-realtime.mjs"
+    "test": "node --test --test-concurrency=1 \"tests/**/*.test.mjs\"",
+    "probe:realtime": "node scripts/probe-realtime.mjs",
+    "audit:tasks": "node scripts/audit-tasks.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",

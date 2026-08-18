@@ -47,9 +47,29 @@ export async function waitForApi(timeoutMs = 60_000) {
 /**
  * Creates a fresh conversation so tests don't interfere with each other or with the demo data —
  * important for the rate-limit tests in particular, since the limiter is keyed per conversation.
+ *
+ * Conversation creation is itself rate limited (per user), and nearly every test needs a
+ * conversation, so the creator is rotated across users to spread the load. User 3 is deliberately
+ * never used as the creator here: the test that proves the create limit works has to exhaust
+ * somebody's allowance, and it uses user 3 so it can't starve everything else.
  */
+let creatorTurn = 0;
+const RESERVED_LIMIT_TEST_CREATOR = 3;
+
 export async function freshConversation(participantIds = [1, 2], title = unique('test-conv')) {
-  const res = await post('/api/conversations', { title, participantIds });
+  const candidates = participantIds.filter((id) => id !== RESERVED_LIMIT_TEST_CREATOR);
+  const creator = candidates.length
+    ? candidates[creatorTurn++ % candidates.length]
+    : participantIds[0];
+  // The route treats the first id as the creator, so put the chosen one first.
+  const ordered = [creator, ...participantIds.filter((id) => id !== creator)];
+
+  let res = await post('/api/conversations', { title, participantIds: ordered });
+  if (res.status === 429) {
+    // Honour the limiter rather than failing the test for the wrong reason.
+    await sleep((Number(res.headers.get('retry-after')) || 1) * 1000 + 250);
+    res = await post('/api/conversations', { title, participantIds: ordered });
+  }
   if (res.status !== 201) throw new Error(`could not create conversation: ${res.status} ${res.text}`);
   return res.body;
 }
@@ -85,13 +105,46 @@ export async function wsClient(userId, conversationIds) {
       }
       return undefined;
     },
-    close: () => ws.close(),
+    /**
+     * Closes and waits for the socket to actually be closed.
+     *
+     * Awaiting matters for anything presence-related: a test that closes without waiting leaves
+     * the server holding a live connection until its heartbeat reaps it, so the *next* test sees
+     * that user as online and its assertions become order-dependent. That cost me a while to
+     * track down.
+     */
+    close: async () => {
+      if (ws.readyState === WebSocket.CLOSED) return;
+      const closed = new Promise((resolve) => {
+        ws.addEventListener('close', resolve, { once: true });
+        setTimeout(resolve, 2_000);
+      });
+      ws.close();
+      await closed;
+    },
   };
 
   client.send({ type: 'subscribe', userId, conversationIds });
   // Wait for the server's ack, so a subsequent POST can't race the subscription.
   await client.waitFor((e) => e.type === 'subscribed', 4_000);
   return client;
+}
+
+/**
+ * Waits until `userId` is reported offline in `conversationId`, so a presence test starts from a
+ * known baseline rather than inheriting connections from whatever ran before it.
+ */
+export async function waitUntilOffline(viewerId, conversationId, userId, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await get(`/api/conversations?userId=${viewerId}`);
+    const participant = res.body
+      ?.find((c) => c.id === conversationId)
+      ?.participants?.find((p) => p.id === userId);
+    if (participant && !participant.online) return true;
+    await sleep(500);
+  }
+  return false;
 }
 
 /**
