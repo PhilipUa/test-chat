@@ -76,6 +76,22 @@ export function messageBodies(): Collection<MessageBody> {
 }
 
 /**
+ * Fetches message bodies by id, indexed by id.
+ *
+ * This is the join between the two stores — MySQL holds a message's id and ordering, Mongo holds
+ * its text — and it was written out twice, in `listMessages` and in `listConversations`. It lives
+ * in one place because it's the seam most likely to change: if the split-store design is ever
+ * revisited (see docs/04-tradeoffs.md), this is the function that changes.
+ */
+export async function messageBodiesById(ids: number[]): Promise<Map<number, string>> {
+  if (!ids.length) return new Map();
+  const docs = await messageBodies()
+    .find({ _id: { $in: ids } }, { projection: { body: 1 } })
+    .toArray();
+  return new Map(docs.map((d) => [d._id, d.body]));
+}
+
+/**
  * Idempotent — Mongo ignores a createIndex for an index that already exists with the same spec.
  * The text index is what makes GET /api/search possible (tasks/search.md); without it a text
  * query is an error rather than a slow query.

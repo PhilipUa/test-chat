@@ -1,5 +1,6 @@
 import { config } from '../config.ts';
 import { redis } from '../db/redis.ts';
+import { LUA_NOW_MS, redisNowMs } from '../db/redis-time.ts';
 
 /**
  * Who is currently online.
@@ -31,9 +32,7 @@ const keyFor = (userId: number) => `relay:presence:${userId}`;
  * Prune stale members, add/refresh this connection, report whether the user was offline before.
  * ARGV: [ttlMs, member]
  */
-const CONNECT = `
-local now_parts = redis.call('TIME')
-local now = (tonumber(now_parts[1]) * 1000) + math.floor(tonumber(now_parts[2]) / 1000)
+const CONNECT = `${LUA_NOW_MS}
 local ttl = tonumber(ARGV[1])
 redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, now - ttl)
 local before = redis.call('ZCARD', KEYS[1])
@@ -44,9 +43,7 @@ return before
 `;
 
 /** Prune, remove this connection, report how many remain. ARGV: [ttlMs, member] */
-const DISCONNECT = `
-local now_parts = redis.call('TIME')
-local now = (tonumber(now_parts[1]) * 1000) + math.floor(tonumber(now_parts[2]) / 1000)
+const DISCONNECT = `${LUA_NOW_MS}
 local ttl = tonumber(ARGV[1])
 redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, now - ttl)
 redis.call('ZREM', KEYS[1], ARGV[2])
@@ -104,7 +101,7 @@ export async function onlineAmong(userIds: number[]): Promise<Set<number>> {
   const unique = [...new Set(userIds)];
   if (!unique.length) return new Set();
   try {
-    const now = await serverNowMs();
+    const now = await redisNowMs();
     const cutoff = now - config.presence.ttlMs;
 
     // One pipeline rather than a round trip per user — this runs on the conversation-list path.
@@ -127,11 +124,3 @@ export async function onlineAmong(userIds: number[]): Promise<Set<number>> {
 
 const member = (connectionId: string) => `${config.instanceId}:${connectionId}`;
 
-/**
- * Reads the clock from Redis rather than the app, for the same reason the rate limiter does:
- * instances with skewed clocks would otherwise disagree about who is online.
- */
-async function serverNowMs(): Promise<number> {
-  const [seconds, micros] = await redis.time();
-  return Number(seconds) * 1000 + Math.floor(Number(micros) / 1000);
-}

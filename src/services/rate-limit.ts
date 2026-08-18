@@ -1,5 +1,6 @@
 import { config } from '../config.ts';
 import { redis } from '../db/redis.ts';
+import { LUA_NOW_MS } from '../db/redis-time.ts';
 
 /**
  * Rate limiting — tasks/rate-limiting.md
@@ -36,9 +37,7 @@ const ALLOW = 1;
  * still agree on where the window starts. Redis replicates script *effects*, so a non
  * deterministic command like TIME is fine here.
  */
-const SLIDING_WINDOW = `
-local now_parts = redis.call('TIME')
-local now = (tonumber(now_parts[1]) * 1000) + math.floor(tonumber(now_parts[2]) / 1000)
+const SLIDING_WINDOW = `${LUA_NOW_MS}
 local window = tonumber(ARGV[1])
 local limit = tonumber(ARGV[2])
 local member = ARGV[3]

@@ -2,7 +2,7 @@ import express from 'express';
 import { config } from '../config.ts';
 import { asyncHandler } from '../http/errors.ts';
 import { enforceRateLimit } from '../http/rate-limit-headers.ts';
-import { intArray, nonEmptyString, positiveInt } from '../http/validate.ts';
+import { int, intArray, nonEmptyString } from '../http/validate.ts';
 import {
   assertParticipant,
   createConversation,
@@ -17,7 +17,7 @@ export const conversationsRouter = express.Router();
 conversationsRouter.get(
   '/',
   asyncHandler(async (req, res) => {
-    const userId = positiveInt(req.query.userId, 'userId');
+    const userId = int(req.query.userId, 'userId');
     res.json(await listConversations(userId));
   }),
 );
@@ -52,9 +52,9 @@ conversationsRouter.post(
 conversationsRouter.post(
   '/:id/read',
   asyncHandler(async (req, res) => {
-    const conversationId = positiveInt(req.params.id, 'conversationId');
-    const userId = positiveInt(req.body?.userId, 'userId');
-    const messageId = positiveInt(req.body?.messageId, 'messageId');
+    const conversationId = int(req.params.id, 'conversationId');
+    const userId = int(req.body?.userId, 'userId');
+    const messageId = int(req.body?.messageId, 'messageId');
 
     await assertParticipant(userId, conversationId);
     const lastReadMessageId = await markRead(userId, conversationId, messageId);

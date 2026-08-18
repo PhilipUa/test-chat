@@ -2,14 +2,7 @@ import express from 'express';
 import { config } from '../config.ts';
 import { asyncHandler } from '../http/errors.ts';
 import { enforceRateLimit } from '../http/rate-limit-headers.ts';
-import {
-  boundedInt,
-  nonEmptyString,
-  optionalClientId,
-  optionalNonNegativeInt,
-  optionalPositiveInt,
-  positiveInt,
-} from '../http/validate.ts';
+import { int, intOr, nonEmptyString, optionalClientId, optionalInt } from '../http/validate.ts';
 import { assertParticipant } from '../services/conversations.ts';
 import { createMessage, listMessages } from '../services/messages.ts';
 import { consumeSendQuota } from '../services/rate-limit.ts';
@@ -21,8 +14,8 @@ messagesRouter.post(
   '/',
   asyncHandler(async (req, res) => {
     const payload = req.body ?? {};
-    const conversationId = positiveInt(payload.conversationId, 'conversationId');
-    const senderId = positiveInt(payload.senderId, 'senderId');
+    const conversationId = int(payload.conversationId, 'conversationId');
+    const senderId = int(payload.senderId, 'senderId');
     const body = nonEmptyString(payload.body, 'body', config.messages.maxBodyLength);
     const clientId = optionalClientId(payload.clientId);
 
@@ -66,19 +59,18 @@ messagesRouter.post(
 messagesRouter.get(
   '/',
   asyncHandler(async (req, res) => {
-    const conversationId = positiveInt(req.query.conversationId, 'conversationId');
-    const userId = optionalPositiveInt(req.query.userId, 'userId');
-    const limit = boundedInt(
-      req.query.limit,
-      'limit',
-      config.messages.defaultPageSize,
-      config.messages.maxPageSize,
-    );
-    const before = optionalPositiveInt(req.query.before, 'before');
+    const conversationId = int(req.query.conversationId, 'conversationId');
+    const userId = optionalInt(req.query.userId, 'userId');
+    const limit = intOr(req.query.limit, 'limit', config.messages.defaultPageSize, {
+      max: config.messages.maxPageSize,
+    });
+    const before = optionalInt(req.query.before, 'before');
     // `since` walks forwards from a known id, for a client catching up after a realtime gap.
     // Redis pub/sub is at-most-once, so events published while an instance was disconnected are
     // lost — this is how a client recovers exactly what it missed instead of refetching wholesale.
-    const since = optionalNonNegativeInt(req.query.since, 'since');
+    // min 0: `since=0` means "everything from the beginning", which is what a client with no
+    // prior state asks for.
+    const since = optionalInt(req.query.since, 'since', { min: 0 });
 
     // userId is optional for backwards compatibility with the original endpoint, but when it's
     // supplied we enforce membership. See docs/04-tradeoffs.md on why this isn't mandatory yet.

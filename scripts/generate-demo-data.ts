@@ -10,7 +10,7 @@
  * Usage: docker compose exec api npx tsx scripts/generate-demo-data.ts [conversations] [perConversation]
  */
 import { config } from '../src/config.ts';
-import { closeMysql, pool, waitForMysql } from '../src/db/mysql.ts';
+import { closeMysql, queryRows, runWrite, sqlRows, waitForMysql } from '../src/db/mysql.ts';
 import {
   closeMongo,
   connectMongo,
@@ -43,7 +43,7 @@ await waitForMysql();
 await connectMongo();
 await ensureMongoIndexes();
 
-const [users] = await pool.query<any[]>('SELECT id FROM users ORDER BY id');
+const users = await queryRows<{ id: number }>('SELECT id FROM users ORDER BY id');
 const userIds = users.map((u) => Number(u.id));
 if (userIds.length < 2) throw new Error('need at least two seeded users');
 
@@ -52,15 +52,14 @@ let totalMessages = 0;
 
 for (let c = 0; c < CONVERSATIONS; c++) {
   const subject = SUBJECTS[c % SUBJECTS.length];
-  const [created] = await pool.execute<any>('INSERT INTO conversations (title) VALUES (?)', [
+  const created = await runWrite('INSERT INTO conversations (title) VALUES (?)', [
     `${subject} — thread ${c + 1}`,
   ]);
   const conversationId = Number(created.insertId);
 
-  await pool.query(
-    `INSERT IGNORE INTO conversation_participants (conversation_id, user_id) VALUES ${userIds
-      .map(() => '(?, ?)')
-      .join(', ')}`,
+  await runWrite(
+    `INSERT IGNORE INTO conversation_participants (conversation_id, user_id)
+     VALUES ${sqlRows(userIds.length, 2)}`,
     userIds.flatMap((uid) => [conversationId, uid]),
   );
 
@@ -77,10 +76,9 @@ for (let c = 0; c < CONVERSATIONS; c++) {
   }
 
   // One multi-row insert, then read the id range back — the ids must match the Mongo _ids.
-  const [res] = await pool.query<any>(
-    `INSERT INTO messages (conversation_id, sender_id, client_id, created_at) VALUES ${rows
-      .map(() => '(?, ?, ?, ?)')
-      .join(', ')}`,
+  const res = await runWrite(
+    `INSERT INTO messages (conversation_id, sender_id, client_id, created_at)
+     VALUES ${sqlRows(rows.length, 4)}`,
     rows.flat(),
   );
   const firstId = Number(res.insertId);
@@ -102,7 +100,7 @@ for (let c = 0; c < CONVERSATIONS; c++) {
     { ordered: false },
   );
 
-  await pool.execute('UPDATE conversations SET last_message_at = ? WHERE id = ?', [
+  await runWrite('UPDATE conversations SET last_message_at = ? WHERE id = ?', [
     docs[docs.length - 1]!.createdAt,
     conversationId,
   ]);

@@ -50,9 +50,12 @@ export interface FanoutEnvelope {
   originConnectionId?: string;
 }
 
-export const channelFor = (conversationId: number): string => `relay:conv:${conversationId}`;
+/** Written once, so the builder and the parser below can't drift apart. */
+const CHANNEL_PREFIX = 'relay:conv:';
+
+export const channelFor = (conversationId: number): string => `${CHANNEL_PREFIX}${conversationId}`;
 
 export function conversationIdFromChannel(channel: string): number | undefined {
-  const id = Number(channel.slice('relay:conv:'.length));
+  const id = Number(channel.slice(CHANNEL_PREFIX.length));
   return Number.isInteger(id) && id > 0 ? id : undefined;
 }

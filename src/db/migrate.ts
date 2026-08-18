@@ -1,4 +1,4 @@
-import { pool } from './mysql.ts';
+import { exists as rowExists, pool, queryOne, queryRows, runWrite } from './mysql.ts';
 
 /**
  * Tiny forward-only migration runner.
@@ -18,21 +18,19 @@ interface Migration {
 const LOCK_NAME = 'relay_migrations';
 
 async function columnExists(table: string, column: string): Promise<boolean> {
-  const [rows] = await pool.query<any[]>(
+  return rowExists(
     `SELECT 1 FROM information_schema.columns
      WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ? LIMIT 1`,
     [table, column],
   );
-  return rows.length > 0;
 }
 
 async function indexExists(table: string, index: string): Promise<boolean> {
-  const [rows] = await pool.query<any[]>(
+  return rowExists(
     `SELECT 1 FROM information_schema.statistics
      WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ? LIMIT 1`,
     [table, index],
   );
-  return rows.length > 0;
 }
 
 const migrations: Migration[] = [
@@ -77,11 +75,11 @@ const migrations: Migration[] = [
     // write path and stored in both stores, which needs millisecond precision to survive.
     name: 'messages: created_at -> DATETIME(3)',
     run: async () => {
-      const [rows] = await pool.query<any[]>(
+      const column = await queryOne<{ column_type: string; datetime_precision: number | null }>(
         `SELECT column_type, datetime_precision FROM information_schema.columns
          WHERE table_schema = DATABASE() AND table_name = 'messages' AND column_name = 'created_at'`,
       );
-      if (rows[0]?.datetime_precision === 3 && /datetime/i.test(rows[0]?.column_type ?? '')) return;
+      if (column?.datetime_precision === 3 && /datetime/i.test(column.column_type ?? '')) return;
       await pool.query(
         'ALTER TABLE messages MODIFY created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)',
       );
@@ -132,7 +130,12 @@ const migrations: Migration[] = [
  * client_id on the rest so they survive as ordinary messages rather than being deleted.
  */
 async function deduplicateExistingClientIds(): Promise<void> {
-  const [dupes] = await pool.query<any[]>(
+  const dupes = await queryRows<{
+    conversation_id: number;
+    client_id: string;
+    keep_id: number;
+    n: number;
+  }>(
     `SELECT conversation_id, client_id, MIN(id) AS keep_id, COUNT(*) AS n
      FROM messages
      WHERE client_id IS NOT NULL
@@ -140,7 +143,7 @@ async function deduplicateExistingClientIds(): Promise<void> {
      HAVING n > 1`,
   );
   for (const d of dupes) {
-    await pool.query(
+    await runWrite(
       'UPDATE messages SET client_id = NULL WHERE conversation_id = ? AND client_id = ? AND id <> ?',
       [d.conversation_id, d.client_id, d.keep_id],
     );
@@ -154,8 +157,12 @@ export async function runMigrations(): Promise<void> {
   // GET_LOCK is connection-scoped, so hold one connection for the whole run.
   const conn = await pool.getConnection();
   try {
-    const [[lock]] = await conn.query<any[]>('SELECT GET_LOCK(?, 30) AS ok', [LOCK_NAME]);
-    if (lock?.ok !== 1) throw new Error('could not acquire migration lock');
+    const lock = await queryOne<{ ok: number | null }>(
+      'SELECT GET_LOCK(?, 30) AS ok',
+      [LOCK_NAME],
+      conn,
+    );
+    if (Number(lock?.ok) !== 1) throw new Error('could not acquire migration lock');
     try {
       for (const m of migrations) {
         await m.run();

@@ -1,13 +1,8 @@
 import express from 'express';
 import { config } from '../config.ts';
-import { HttpError, asyncHandler } from '../http/errors.ts';
+import { asyncHandler } from '../http/errors.ts';
 import { enforceRateLimit } from '../http/rate-limit-headers.ts';
-import {
-  boundedInt,
-  boundedNonNegativeInt,
-  optionalPositiveInt,
-  positiveInt,
-} from '../http/validate.ts';
+import { int, intOr, optionalInt, optionalIsoDate } from '../http/validate.ts';
 import { consumeSearchQuota } from '../services/rate-limit.ts';
 import { searchMessages } from '../services/search.ts';
 
@@ -34,7 +29,7 @@ searchRouter.get(
   '/',
   asyncHandler(async (req, res) => {
     const q = String(req.query.q ?? '').trim();
-    const userId = positiveInt(req.query.userId, 'userId');
+    const userId = int(req.query.userId, 'userId');
 
     // A blank query is free — it does no work, so metering it would only punish an empty submit.
     if (!q) {
@@ -52,22 +47,16 @@ searchRouter.get(
 
     res.json(
       await searchMessages(userId, q, {
-        limit: boundedInt(req.query.limit, 'limit', config.search.defaultLimit, config.search.maxLimit),
-        offset: boundedNonNegativeInt(req.query.offset, 'offset', 0, config.search.maxOffset),
-        conversationId: optionalPositiveInt(req.query.conversationId, 'conversationId'),
-        senderId: optionalPositiveInt(req.query.senderId, 'senderId'),
-        from: optionalDate(req.query.from, 'from'),
-        to: optionalDate(req.query.to, 'to'),
+        limit: intOr(req.query.limit, 'limit', config.search.defaultLimit, {
+          max: config.search.maxLimit,
+        }),
+        // min 0: offset 0 is the first page.
+        offset: intOr(req.query.offset, 'offset', 0, { min: 0, max: config.search.maxOffset }),
+        conversationId: optionalInt(req.query.conversationId, 'conversationId'),
+        senderId: optionalInt(req.query.senderId, 'senderId'),
+        from: optionalIsoDate(req.query.from, 'from'),
+        to: optionalIsoDate(req.query.to, 'to'),
       }),
     );
   }),
 );
-
-function optionalDate(value: unknown, field: string): Date | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-  const parsed = new Date(String(value));
-  if (Number.isNaN(parsed.getTime())) {
-    throw HttpError.badRequest(`${field} must be an ISO date`);
-  }
-  return parsed;
-}

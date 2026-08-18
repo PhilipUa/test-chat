@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { config } from '../config.ts';
-import { isDuplicateKeyError, pool } from '../db/mysql.ts';
-import { messageBodies, tokenizeBody } from '../db/mongo.ts';
+import { isDuplicateKeyError, queryOne, queryRows, runWrite } from '../db/mysql.ts';
+import { messageBodies, messageBodiesById, tokenizeBody } from '../db/mongo.ts';
 
 export interface NewMessage {
   conversationId: number;
@@ -17,6 +17,35 @@ export interface Message {
   body: string;
   clientId: string | null;
   createdAt: string;
+}
+
+/**
+ * A `messages` row as selected by the queries below. Column aliases are chosen to match the
+ * `Message` field names, so `toMessage` is a straight copy plus the body from Mongo.
+ */
+interface MessageRow {
+  id: number;
+  conversationId: number;
+  senderId: number;
+  clientId: string | null;
+  createdAt: Date;
+}
+
+/**
+ * The single row -> Message mapping.
+ *
+ * This was written out twice in this file, 76 lines apart, field for field — so a new field would
+ * have had to be remembered in both. The body comes from Mongo, hence the second argument.
+ */
+function toMessage(row: MessageRow, body: string): Message {
+  return {
+    id: Number(row.id),
+    conversationId: Number(row.conversationId),
+    senderId: Number(row.senderId),
+    body,
+    clientId: row.clientId,
+    createdAt: new Date(row.createdAt).toISOString(),
+  };
 }
 
 export interface CreateResult {
@@ -79,7 +108,7 @@ export async function createMessage(input: NewMessage): Promise<CreateResult> {
 
   let id: number;
   try {
-    const [res] = await pool.execute<any>(
+    const res = await runWrite(
       `INSERT INTO messages (conversation_id, sender_id, client_id, created_at)
        VALUES (?, ?, ?, ?)`,
       [conversationId, senderId, clientId, createdAt],
@@ -111,19 +140,18 @@ export async function createMessage(input: NewMessage): Promise<CreateResult> {
       ),
     });
   } catch (err) {
-    await pool
-      .execute('DELETE FROM messages WHERE id = ?', [id])
-      .catch((cleanupErr) =>
-        console.error(`[messages] failed to roll back message ${id}:`, cleanupErr),
-      );
+    await runWrite('DELETE FROM messages WHERE id = ?', [id]).catch((cleanupErr) =>
+      console.error(`[messages] failed to roll back message ${id}:`, cleanupErr),
+    );
     throw err;
   }
 
   // Keeps the inbox orderable by recency without scanning `messages`. Best-effort: a failure
   // here only affects sort order, so it must not fail a send that already succeeded.
-  await pool
-    .execute('UPDATE conversations SET last_message_at = ? WHERE id = ?', [createdAt, conversationId])
-    .catch(() => {});
+  await runWrite('UPDATE conversations SET last_message_at = ? WHERE id = ?', [
+    createdAt,
+    conversationId,
+  ]).catch(() => {});
 
   return {
     message: {
@@ -142,24 +170,16 @@ async function findByClientId(
   conversationId: number,
   clientId: string,
 ): Promise<Message | null> {
-  const [rows] = await pool.query<any[]>(
+  const row = await queryOne<MessageRow>(
     `SELECT id, conversation_id AS conversationId, sender_id AS senderId,
             client_id AS clientId, created_at AS createdAt
      FROM messages WHERE conversation_id = ? AND client_id = ? LIMIT 1`,
     [conversationId, clientId],
   );
-  const row = rows[0];
   if (!row) return null;
 
   const doc = await messageBodies().findOne({ _id: Number(row.id) }, { projection: { body: 1 } });
-  return {
-    id: Number(row.id),
-    conversationId: Number(row.conversationId),
-    senderId: Number(row.senderId),
-    body: doc?.body ?? '',
-    clientId: row.clientId,
-    createdAt: new Date(row.createdAt).toISOString(),
-  };
+  return toMessage(row, doc?.body ?? '');
 }
 
 export interface MessagePage {
@@ -203,7 +223,7 @@ export async function listMessages(
   }
 
   // limit + 1 tells us whether there is another page without a second COUNT query.
-  const [rows] = await pool.query<any[]>(
+  const rows = await queryRows<MessageRow>(
     `SELECT id, conversation_id AS conversationId, sender_id AS senderId,
             client_id AS clientId, created_at AS createdAt
      FROM messages
@@ -218,25 +238,12 @@ export async function listMessages(
   // Always hand back oldest -> newest for rendering. Forwards queries already are.
   const page = forwards ? trimmed : trimmed.reverse();
 
-  const ids = page.map((r) => Number(r.id));
-  const bodies = ids.length
-    ? await messageBodies()
-        .find({ _id: { $in: ids } }, { projection: { body: 1 } })
-        .toArray()
-    : [];
-  const bodyById = new Map(bodies.map((b) => [b._id, b.body]));
+  const bodyById = await messageBodiesById(page.map((r) => Number(r.id)));
 
   return {
-    messages: page.map((r) => ({
-      id: Number(r.id),
-      conversationId: Number(r.conversationId),
-      senderId: Number(r.senderId),
-      body: bodyById.get(Number(r.id)) ?? '',
-      clientId: r.clientId,
-      createdAt: new Date(r.createdAt).toISOString(),
-    })),
-    nextBefore: page.length ? Number(page[0].id) : null,
+    messages: page.map((r) => toMessage(r, bodyById.get(Number(r.id)) ?? '')),
+    nextBefore: page.length ? Number(page[0]!.id) : null,
     hasMore,
-    latestId: page.length ? Number(page[page.length - 1].id) : null,
+    latestId: page.length ? Number(page[page.length - 1]!.id) : null,
   };
 }

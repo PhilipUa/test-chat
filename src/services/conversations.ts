@@ -1,5 +1,14 @@
-import { isDuplicateKeyError, pool, withTransaction } from '../db/mysql.ts';
-import { messageBodies } from '../db/mongo.ts';
+import {
+  exists,
+  isDuplicateKeyError,
+  queryOne,
+  queryRows,
+  runWrite,
+  sqlList,
+  sqlRows,
+  withTransaction,
+} from '../db/mysql.ts';
+import { messageBodiesById } from '../db/mongo.ts';
 import { HttpError } from '../http/errors.ts';
 import { onlineAmong } from './presence.ts';
 
@@ -14,6 +23,24 @@ export interface Participant {
   id: number;
   name: string;
   online: boolean;
+}
+
+/** Row shapes for the queries in this file, declared next to the query that produces them. */
+interface ConversationSummaryRow {
+  id: number;
+  title: string;
+  lastReadMessageId: number | null;
+  messageCount: number;
+  unreadCount: number;
+  lastMessageId: number | null;
+  lastSenderId: number | null;
+  lastCreatedAt: Date | null;
+}
+
+interface ParticipantRow {
+  conversationId: number;
+  id: number;
+  name: string;
 }
 
 export interface ConversationSummary {
@@ -34,7 +61,7 @@ export interface ConversationSummary {
  * idx_messages_conversation, plus one batched Mongo lookup for the preview bodies.
  */
 export async function listConversations(userId: number): Promise<ConversationSummary[]> {
-  const [rows] = await pool.query<any[]>(
+  const rows = await queryRows<ConversationSummaryRow>(
     `SELECT
        c.id,
        c.title,
@@ -59,12 +86,7 @@ export async function listConversations(userId: number): Promise<ConversationSum
 
   // One batched lookup for the preview bodies instead of one per conversation.
   const lastIds = rows.map((r) => Number(r.lastMessageId)).filter((id) => Number.isInteger(id));
-  const bodies = lastIds.length
-    ? await messageBodies()
-        .find({ _id: { $in: lastIds } }, { projection: { body: 1 } })
-        .toArray()
-    : [];
-  const bodyById = new Map(bodies.map((b) => [b._id, b.body]));
+  const bodyById = await messageBodiesById(lastIds);
 
   // Participants for every conversation in one query rather than one per row — the same N+1 the
   // rest of this function exists to avoid.
@@ -82,7 +104,7 @@ export async function listConversations(userId: number): Promise<ConversationSum
           id: Number(r.lastMessageId),
           senderId: Number(r.lastSenderId),
           body: bodyById.get(Number(r.lastMessageId)) ?? '',
-          createdAt: new Date(r.lastCreatedAt).toISOString(),
+          createdAt: new Date(r.lastCreatedAt!).toISOString(),
         }
       : null,
     participants: participantsByConversation.get(Number(r.id)) ?? [],
@@ -100,11 +122,11 @@ async function participantsFor(
   const result = new Map<number, Participant[]>();
   if (!conversationIds.length) return result;
 
-  const [rows] = await pool.query<any[]>(
+  const rows = await queryRows<ParticipantRow>(
     `SELECT p.conversation_id AS conversationId, u.id, u.name
      FROM conversation_participants p
      JOIN users u ON u.id = p.user_id
-     WHERE p.conversation_id IN (${conversationIds.map(() => '?').join(',')})
+     WHERE p.conversation_id IN (${sqlList(conversationIds.length)})
        AND p.user_id <> ?
      ORDER BY u.name ASC`,
     [...conversationIds, excludeUserId],
@@ -130,8 +152,8 @@ export async function createConversation(
   title: string,
   participantIds: number[],
 ): Promise<{ id: number; title: string; participantIds: number[] }> {
-  const [known] = await pool.query<any[]>(
-    `SELECT id FROM users WHERE id IN (${participantIds.map(() => '?').join(',')})`,
+  const known = await queryRows<{ id: number }>(
+    `SELECT id FROM users WHERE id IN (${sqlList(participantIds.length)})`,
     participantIds,
   );
   const knownIds = new Set(known.map((r) => Number(r.id)));
@@ -141,18 +163,16 @@ export async function createConversation(
   }
 
   return withTransaction(async (conn) => {
-    const [created] = await conn.execute<any>('INSERT INTO conversations (title) VALUES (?)', [
-      title,
-    ]);
+    const created = await runWrite('INSERT INTO conversations (title) VALUES (?)', [title], conn);
     const id = Number(created.insertId);
 
     // One multi-row insert instead of a loop. INSERT IGNORE keeps a duplicate from being fatal
     // even if something upstream lets one through.
-    await conn.query(
-      `INSERT IGNORE INTO conversation_participants (conversation_id, user_id) VALUES ${participantIds
-        .map(() => '(?, ?)')
-        .join(', ')}`,
+    await runWrite(
+      `INSERT IGNORE INTO conversation_participants (conversation_id, user_id)
+       VALUES ${sqlRows(participantIds.length, 2)}`,
       participantIds.flatMap((uid) => [id, uid]),
+      conn,
     );
 
     return { id, title, participantIds };
@@ -161,19 +181,20 @@ export async function createConversation(
 
 /** Finding E: nothing checked whether the caller was actually in the conversation. */
 export async function assertParticipant(userId: number, conversationId: number): Promise<void> {
-  const [rows] = await pool.query<any[]>(
+  const isParticipant = await exists(
     `SELECT 1 FROM conversation_participants
      WHERE conversation_id = ? AND user_id = ? LIMIT 1`,
     [conversationId, userId],
   );
-  if (rows.length) return;
+  if (isParticipant) return;
 
   // Distinguish "no such conversation" from "not yours" for a useful error, but don't leak the
   // existence of conversations the caller isn't in.
-  const [exists] = await pool.query<any[]>('SELECT 1 FROM conversations WHERE id = ? LIMIT 1', [
-    conversationId,
-  ]);
-  if (!exists.length) throw HttpError.notFound(`conversation ${conversationId} not found`);
+  const conversationExists = await exists(
+    'SELECT 1 FROM conversations WHERE id = ? LIMIT 1',
+    [conversationId],
+  );
+  if (!conversationExists) throw HttpError.notFound(`conversation ${conversationId} not found`);
   throw HttpError.forbidden(`user ${userId} is not a participant in conversation ${conversationId}`);
 }
 
@@ -187,7 +208,7 @@ export async function participantConversationIds(
   requested: number[] = [],
 ): Promise<number[]> {
   if (requested.length === 0) {
-    const [rows] = await pool.query<any[]>(
+    const rows = await queryRows<{ conversation_id: number }>(
       'SELECT conversation_id FROM conversation_participants WHERE user_id = ?',
       [userId],
     );
@@ -195,16 +216,16 @@ export async function participantConversationIds(
   }
 
   const unique = [...new Set(requested)];
-  const [rows] = await pool.query<any[]>(
+  const rows = await queryRows<{ conversation_id: number }>(
     `SELECT conversation_id FROM conversation_participants
-     WHERE user_id = ? AND conversation_id IN (${unique.map(() => '?').join(',')})`,
+     WHERE user_id = ? AND conversation_id IN (${sqlList(unique.length)})`,
     [userId, ...unique],
   );
   return rows.map((r) => Number(r.conversation_id));
 }
 
 export async function participantIdsOf(conversationId: number): Promise<number[]> {
-  const [rows] = await pool.query<any[]>(
+  const rows = await queryRows<{ user_id: number }>(
     'SELECT user_id FROM conversation_participants WHERE conversation_id = ?',
     [conversationId],
   );
@@ -223,28 +244,28 @@ export async function markRead(
   conversationId: number,
   messageId: number,
 ): Promise<number> {
-  await pool.execute(
+  await runWrite(
     `UPDATE conversation_participants
      SET last_read_message_id = GREATEST(last_read_message_id, ?)
      WHERE conversation_id = ? AND user_id = ?`,
     [messageId, conversationId, userId],
   );
-  const [rows] = await pool.query<any[]>(
+  const row = await queryOne<{ lastReadMessageId: number }>(
     `SELECT last_read_message_id AS lastReadMessageId FROM conversation_participants
      WHERE conversation_id = ? AND user_id = ?`,
     [conversationId, userId],
   );
-  return Number(rows[0]?.lastReadMessageId ?? 0);
+  return Number(row?.lastReadMessageId ?? 0);
 }
 
 export async function conversationTitles(ids: number[]): Promise<Map<number, string>> {
   if (!ids.length) return new Map();
   const unique = [...new Set(ids)];
-  const [rows] = await pool.query<any[]>(
-    `SELECT id, title FROM conversations WHERE id IN (${unique.map(() => '?').join(',')})`,
+  const rows = await queryRows<{ id: number; title: string }>(
+    `SELECT id, title FROM conversations WHERE id IN (${sqlList(unique.length)})`,
     unique,
   );
-  return new Map(rows.map((r) => [Number(r.id), r.title as string]));
+  return new Map(rows.map((r) => [Number(r.id), r.title]));
 }
 
 export { isDuplicateKeyError };

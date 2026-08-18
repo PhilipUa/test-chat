@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { config } from '../config.ts';
 import { redis, redisSubscriber } from '../db/redis.ts';
-import { participantConversationIds } from '../services/conversations.ts';
+import { participantConversationIds, participantIdsOf } from '../services/conversations.ts';
 import { getUserName } from '../services/users.ts';
 import {
   connectionClosed,
@@ -18,7 +18,6 @@ import {
   type ConversationEvent,
   type FanoutEnvelope,
 } from './events.ts';
-import { participantIdsOf } from '../services/conversations.ts';
 
 /**
  * WebSocket hub.
