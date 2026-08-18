@@ -141,8 +141,15 @@ export async function closeWs(): Promise<void> {
   // unanswered one for 30 seconds while its client set stays non-empty.
   registry.closeAll('server shutting down');
   const graceStarted = Date.now();
-  for (let i = 0; i < 20 && registry.openCount() > 0; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  // Long enough for a close handshake to complete, short enough to stay well inside the force-exit. 1s was
+  // not enough: draining six sockets at once left two of them terminated mid-handshake, which the client
+  // sees as 1006 (abnormal) rather than 1001 (server going away). Both make a browser reconnect, so nothing
+  // was lost — but 1006 in a log reads as a network fault rather than a planned drain, which is exactly the
+  // wrong story to tell about a scale-down.
+  const graceMs = 3_000;
+  const step = 50;
+  for (let i = 0; i < graceMs / step && registry.openCount() > 0; i++) {
+    await new Promise((resolve) => setTimeout(resolve, step));
   }
   const stillOpen = registry.openCount();
   registry.terminateAll();
