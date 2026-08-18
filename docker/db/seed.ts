@@ -1,6 +1,14 @@
-import { closeMongo, connectMongo, ensureMongoIndexes, messageBodies } from '../../src/db/mongo.ts';
+import {
+  backfillBodyTokens,
+  closeMongo,
+  connectMongo,
+  ensureMongoIndexes,
+  messageBodies,
+  tokenizeBody,
+} from '../../src/db/mongo.ts';
 import { closeMysql, pool, waitForMysql } from '../../src/db/mysql.ts';
 import { runMigrations } from '../../src/db/migrate.ts';
+import { config } from '../../src/config.ts';
 
 /**
  * Seeds the Mongo half of the demo messages, and applies the MySQL schema migrations.
@@ -39,11 +47,18 @@ for (const [i, doc] of DEMO_BODIES.entries()) {
         // that verifySignature will reject rather than a forged-looking valid one.
         signature: '',
         createdAt: new Date(SEEDED_AT.getTime() + i * 60_000),
+        bodyTokens: tokenizeBody(
+          doc.body,
+          config.search.maxTokenLength,
+          config.search.maxTokensPerMessage,
+        ),
       },
     },
     { upsert: true },
   );
 }
+
+await backfillBodyTokens(config.search.maxTokenLength, config.search.maxTokensPerMessage);
 
 const total = await bodies.countDocuments();
 console.log(`seeded ${DEMO_BODIES.length} demo message bodies (${total} total, existing data kept)`);

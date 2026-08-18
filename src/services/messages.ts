@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { config } from '../config.ts';
 import { isDuplicateKeyError, pool } from '../db/mysql.ts';
-import { messageBodies } from '../db/mongo.ts';
+import { messageBodies, tokenizeBody } from '../db/mongo.ts';
 
 export interface NewMessage {
   conversationId: number;
@@ -102,6 +102,13 @@ export async function createMessage(input: NewMessage): Promise<CreateResult> {
       body,
       signature: sign(body),
       createdAt,
+      // Written at insert time so partial-word search is an index range scan rather than a
+      // collection scan. See MessageBody.bodyTokens.
+      bodyTokens: tokenizeBody(
+        body,
+        config.search.maxTokenLength,
+        config.search.maxTokensPerMessage,
+      ),
     });
   } catch (err) {
     await pool
@@ -160,6 +167,8 @@ export interface MessagePage {
   /** Id to pass as `before` to fetch the previous page; null when at the start. */
   nextBefore: number | null;
   hasMore: boolean;
+  /** Highest id in this page, for a client tracking what it has seen. */
+  latestId: number | null;
 }
 
 /**
@@ -173,13 +182,22 @@ export interface MessagePage {
  */
 export async function listMessages(
   conversationId: number,
-  opts: { limit?: number; before?: number } = {},
+  opts: { limit?: number; before?: number; since?: number } = {},
 ): Promise<MessagePage> {
   const limit = Math.min(opts.limit ?? config.messages.defaultPageSize, config.messages.maxPageSize);
 
   const params: unknown[] = [conversationId];
+
+  // `since` walks *forwards* from a known id — the catch-up direction. Realtime fan-out over
+  // Redis pub/sub is at-most-once, so anything published while an instance was disconnected from
+  // Redis is simply gone, and the client's WebSocket never noticed. This is how a client recovers
+  // exactly what it missed instead of refetching a whole conversation.
+  const forwards = opts.since !== undefined;
   let cursor = '';
-  if (opts.before !== undefined) {
+  if (forwards) {
+    cursor = 'AND id > ?';
+    params.push(opts.since);
+  } else if (opts.before !== undefined) {
     cursor = 'AND id < ?';
     params.push(opts.before);
   }
@@ -190,13 +208,15 @@ export async function listMessages(
             client_id AS clientId, created_at AS createdAt
      FROM messages
      WHERE conversation_id = ? ${cursor}
-     ORDER BY id DESC
+     ORDER BY id ${forwards ? 'ASC' : 'DESC'}
      LIMIT ${limit + 1}`,
     params,
   );
 
   const hasMore = rows.length > limit;
-  const page = (hasMore ? rows.slice(0, limit) : rows).reverse(); // oldest -> newest for display
+  const trimmed = hasMore ? rows.slice(0, limit) : rows;
+  // Always hand back oldest -> newest for rendering. Forwards queries already are.
+  const page = forwards ? trimmed : trimmed.reverse();
 
   const ids = page.map((r) => Number(r.id));
   const bodies = ids.length
@@ -217,5 +237,6 @@ export async function listMessages(
     })),
     nextBefore: page.length ? Number(page[0].id) : null,
     hasMore,
+    latestId: page.length ? Number(page[page.length - 1].id) : null,
   };
 }
