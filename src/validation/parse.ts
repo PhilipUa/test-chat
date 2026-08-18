@@ -1,6 +1,16 @@
-import { HttpError } from './errors.ts';
+import { HttpError } from '../errors.ts';
 
-/** Small validation helpers — every id in this app arrives as an untrusted string. */
+/**
+ * Request value parsers.
+ *
+ * Every id in this app arrives as an untrusted string. These throw HttpError, so a bad value becomes
+ * a 400 wherever they're called — in a controller, or in middleware.
+ *
+ * Deliberately not middleware themselves: middleware can only hand results over through
+ * `res.locals`, which TypeScript can't type per-route, so parsing in the controller is where the
+ * compiler still checks that `limit` is a number and `clientId` can be null. Middleware is used for
+ * the genuinely cross-cutting concerns instead — identity, authorization, rate limiting.
+ */
 
 interface IntOptions {
   /** Smallest accepted value. Defaults to 1, since most numbers here are ids. */

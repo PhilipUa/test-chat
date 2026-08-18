@@ -106,6 +106,7 @@ Thanks — this was a good one to dig into. Everything below is in the repo as y
 | [`docs/05-hardening.md`](docs/05-hardening.md) | a second pass closing the gaps the first one left, including bugs I introduced myself |
 | [`spec/refactoring-plan.md`](spec/refactoring-plan.md) | the SOLID/KISS/DRY plan — including what I deliberately would not do |
 | [`docs/06-refactoring.md`](docs/06-refactoring.md) | executing it, the outcome against the plan's own targets, and what it found |
+| [`docs/07-structure.md`](docs/07-structure.md) | Express layering — controllers and middleware, and the plan decision I reversed |
 
 ## The short version
 

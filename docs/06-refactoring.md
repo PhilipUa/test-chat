@@ -82,17 +82,8 @@ because migrations are append-only history.
 
 ## Structure now
 
-```
-src/
-  db/       mysql (typed helpers) · mongo · redis · redis-time · migrate
-  http/     errors · validate · rate-limit-headers
-  routes/   conversations · messages · search · users
-  services/ conversations/{membership,queries,commands} · messages · message-store
-            message-signing · search · presence · rate-limit · users
-  ws/       hub (wiring) · registry · channels · fanout · protocol · events
-web/js/     state · api · socket · main · views/{sidebar,messages,search,notice}
-            features/{typing,presence}
-```
+Superseded by a further pass into conventional Express layering — controllers, middleware, and app/
+server separation. See [`07-structure.md`](07-structure.md).
 
 ## A note on the verification run
 

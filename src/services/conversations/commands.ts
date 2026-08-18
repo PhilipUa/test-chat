@@ -1,5 +1,5 @@
 import { queryOne, queryRows, runWrite, sqlList, sqlRows, withTransaction } from '../../db/mysql.ts';
-import { HttpError } from '../../http/errors.ts';
+import { HttpError } from '../../errors.ts';
 
 /**
  * Conversation writes.

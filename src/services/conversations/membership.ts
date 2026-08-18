@@ -1,5 +1,5 @@
 import { exists, queryRows, sqlList } from '../../db/mysql.ts';
-import { HttpError } from '../../http/errors.ts';
+import { HttpError } from '../../errors.ts';
 
 /**
  * Conversation membership and authorization.

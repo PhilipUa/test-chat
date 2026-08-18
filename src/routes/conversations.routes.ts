@@ -1,0 +1,41 @@
+import { Router } from 'express';
+import { config } from '../config.ts';
+import * as conversations from '../controllers/conversations.controller.ts';
+import { asyncHandler } from '../middleware/async-handler.ts';
+import { actorId } from '../middleware/locals.ts';
+import { rateLimit } from '../middleware/rate-limit.ts';
+import { fromBody, fromParam, fromQuery, requireActor } from '../middleware/require-actor.ts';
+import { requireParticipant } from '../middleware/require-participant.ts';
+import { consumeCreateQuota } from '../services/rate-limit.ts';
+
+export const conversationsRouter = Router();
+
+/** GET /api/conversations?userId=… — the inbox for one user. */
+conversationsRouter.get('/', requireActor(fromQuery('userId')), asyncHandler(conversations.list));
+
+/**
+ * POST /api/conversations
+ *
+ * The creator is the first participant until there's real auth to take it from. Metered so
+ * conversation creation can't be used for unbounded growth — a high ceiling, since creating
+ * conversations is normal bursty behaviour and isn't the abuse vector search is.
+ */
+conversationsRouter.post(
+  '/',
+  requireActor((req) => req.body?.participantIds?.[0], 'participantIds[0]'),
+  rateLimit({
+    consume: (_req, res) => consumeCreateQuota(actorId(res)),
+    describe: (limit) =>
+      `rate limit exceeded: at most ${limit} new conversations per ${
+        config.rateLimit.createWindowMs / 1000
+      }s`,
+  }),
+  asyncHandler(conversations.create),
+);
+
+/** POST /api/conversations/:id/read — moves this participant's unread watermark forward. */
+conversationsRouter.post(
+  '/:id/read',
+  requireParticipant({ actor: fromBody('userId'), conversation: fromParam('id') }),
+  asyncHandler(conversations.read),
+);
