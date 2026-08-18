@@ -1,21 +1,34 @@
+-- Initial schema. Only executed on a *fresh* MySQL volume, so this is the greenfield shape;
+-- src/db/migrate.ts applies the same structure idempotently at boot for installs that already
+-- have a volume. Keep the two in agreement.
+
 SET NAMES utf8mb4;
 
 CREATE TABLE users (
   id INT PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(100) NOT NULL,
-  email VARCHAR(190) NOT NULL
+  email VARCHAR(190) NOT NULL,
+  UNIQUE KEY uniq_users_email (email)
 );
 
 CREATE TABLE conversations (
   id INT PRIMARY KEY AUTO_INCREMENT,
   title VARCHAR(200) NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  -- Lets the inbox sort by recent activity without touching `messages`.
+  last_message_at DATETIME(3) NULL
 );
 
 CREATE TABLE conversation_participants (
   conversation_id INT NOT NULL,
   user_id INT NOT NULL,
-  PRIMARY KEY (conversation_id, user_id)
+  -- Server-side unread watermark. The dot used to live only in a browser variable, so it
+  -- couldn't survive a reload or agree between two tabs.
+  last_read_message_id BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (conversation_id, user_id),
+  -- The PK is prefixed by conversation_id, so looking a user's conversations up by user_id
+  -- (which the conversation list does) had no usable index.
+  KEY idx_participants_user (user_id)
 );
 
 CREATE TABLE messages (
@@ -23,7 +36,15 @@ CREATE TABLE messages (
   conversation_id INT NOT NULL,
   sender_id INT NOT NULL,
   client_id VARCHAR(64) NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  -- DATETIME(3): one timestamp is generated in the write path and stored in both MySQL and
+  -- Mongo, which needs millisecond precision to round-trip identically.
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  -- Every query in the app filters by conversation_id; covering (conversation_id, id) also turns
+  -- `ORDER BY id` and `MAX(id)` into index seeks.
+  KEY idx_messages_conversation (conversation_id, id),
+  -- Makes a retried send idempotent. NULLs don't collide in a MySQL unique index, so messages
+  -- sent without a client id are simply not deduplicated.
+  UNIQUE KEY uniq_messages_client_id (conversation_id, client_id)
 );
 
 INSERT INTO users (id, name, email) VALUES
