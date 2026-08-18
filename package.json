@@ -23,6 +23,7 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.7.4",
     "@types/ws": "^8.5.12",
+    "playwright": "^1.62.1",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2"
   }

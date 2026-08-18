@@ -1,7 +1,7 @@
 import { config } from '../config.ts';
 import {
   participantConversationIds,
-  participantIdsOf,
+  participantIdsOfMany,
 } from '../services/conversations/membership.ts';
 import { onlineAmong, connectionClosed, connectionOpened } from '../services/presence.ts';
 import { consumeTypingQuota } from '../services/rate-limit.ts';
@@ -106,16 +106,28 @@ async function handleTyping(client: Client, frame: Record<string, unknown>): Pro
   );
 }
 
-/** Tells the client which participants of its conversations are online right now. */
+/**
+ * Tells the client which participants of its conversations are online right now.
+ *
+ * Two round trips total — one query for every subscribed conversation's participants, one presence
+ * lookup for the union of those users — rather than two per conversation.
+ */
 async function sendPresenceSnapshot(client: Client): Promise<void> {
   if (!client.subs.size) return;
-  const conversations = await Promise.all(
-    [...client.subs].map(async (conversationId) => {
-      const participants = await participantIdsOf(conversationId);
-      const online = await onlineAmong(participants.filter((id) => id !== client.userId));
-      return { conversationId, online: [...online] };
-    }),
-  );
+
+  const byConversation = await participantIdsOfMany([...client.subs]);
+  const everyone = new Set<number>();
+  for (const ids of byConversation.values()) {
+    for (const id of ids) if (id !== client.userId) everyone.add(id);
+  }
+  const online = await onlineAmong([...everyone]);
+
+  const conversations = [...client.subs].map((conversationId) => ({
+    conversationId,
+    online: (byConversation.get(conversationId) ?? []).filter(
+      (id) => id !== client.userId && online.has(id),
+    ),
+  }));
   registry.send(client, { type: 'presence-snapshot', conversations });
 }
 

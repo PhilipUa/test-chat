@@ -67,3 +67,32 @@ export async function participantIdsOf(conversationId: number): Promise<number[]
   );
   return rows.map((r) => Number(r.user_id));
 }
+
+/**
+ * Participant ids for many conversations in one query.
+ *
+ * The presence snapshot used to call participantIdsOf per conversation and then onlineAmong per
+ * conversation — two round trips each, on every subscribe. Harmless with two conversations; a
+ * subscriber with 1,083 of them was issuing ~2,000 queries before its socket was usable, which is
+ * exactly the N+1 shape the conversation list was fixed for.
+ */
+export async function participantIdsOfMany(
+  conversationIds: number[],
+): Promise<Map<number, number[]>> {
+  const result = new Map<number, number[]>();
+  if (!conversationIds.length) return result;
+
+  const unique = [...new Set(conversationIds)];
+  const rows = await queryRows<{ conversation_id: number; user_id: number }>(
+    `SELECT conversation_id, user_id FROM conversation_participants
+     WHERE conversation_id IN (${sqlList(unique.length)})`,
+    unique,
+  );
+  for (const row of rows) {
+    const id = Number(row.conversation_id);
+    const list = result.get(id) ?? [];
+    list.push(Number(row.user_id));
+    result.set(id, list);
+  }
+  return result;
+}
