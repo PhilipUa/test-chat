@@ -48,7 +48,7 @@ shows which replicas Envoy has discovered, and `/api/health` reports which one s
 
 ### Tests
 
-59 integration tests against the running stack:
+70 tests against the running stack — 59 API-level plus 11 in a real browser:
 
 ```
 npm install
@@ -104,6 +104,8 @@ Thanks — this was a good one to dig into. Everything below is in the repo as y
 | [`docs/03-changes.md`](docs/03-changes.md) | what I changed and why, with before/after numbers |
 | [`docs/04-tradeoffs.md`](docs/04-tradeoffs.md) | what I deliberately *didn't* do, and the reasoning |
 | [`docs/05-hardening.md`](docs/05-hardening.md) | a second pass closing the gaps the first one left, including bugs I introduced myself |
+| [`spec/refactoring-plan.md`](spec/refactoring-plan.md) | the SOLID/KISS/DRY plan — including what I deliberately would not do |
+| [`docs/06-refactoring.md`](docs/06-refactoring.md) | executing it, the outcome against the plan's own targets, and what it found |
 
 ## The short version
 
