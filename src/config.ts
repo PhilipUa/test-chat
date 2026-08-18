@@ -38,12 +38,34 @@ export const config = {
     /** Typing frames are cheap but shouldn't be a free broadcast channel either. */
     typingLimit: num('TYPING_RATE_LIMIT_MAX', 10),
     typingWindowMs: num('TYPING_RATE_LIMIT_WINDOW_MS', 10_000),
+    /**
+     * Search is the most expensive read in the app — it fans out over every message in the
+     * caller's conversations. Sends were the only limited endpoint, which left an unmetered way
+     * to generate unbounded read load. Per user, not per conversation: search spans them.
+     */
+    searchLimit: num('SEARCH_RATE_LIMIT_MAX', 20),
+    searchWindowMs: num('SEARCH_RATE_LIMIT_WINDOW_MS', 10_000),
+    /**
+     * Creating conversations is cheap per call, but unbounded growth isn't. Deliberately a high
+     * ceiling: this is a runaway-script guard, not a tight control. Creating conversations is
+     * normal, bursty, legitimate behaviour (importing a backlog, an integration fanning out), and
+     * a tight limit here punishes real use to prevent something that isn't the actual abuse
+     * vector — search is. Set low enough to stop a loop, high enough that nobody honest meets it.
+     */
+    createLimit: num('CREATE_RATE_LIMIT_MAX', 60),
+    createWindowMs: num('CREATE_RATE_LIMIT_WINDOW_MS', 60_000),
   },
 
   search: {
     defaultLimit: num('SEARCH_LIMIT', 25),
     maxLimit: num('SEARCH_MAX_LIMIT', 100),
     snippetRadius: num('SEARCH_SNIPPET_RADIUS', 60),
+    /** Ceiling on paging depth. Deep skips get expensive and nobody pages to 10,000. */
+    maxOffset: num('SEARCH_MAX_OFFSET', 500),
+    /** Longest token stored for prefix matching; anything longer is truncated. */
+    maxTokenLength: num('SEARCH_MAX_TOKEN_LENGTH', 32),
+    /** Cap tokens per message so one enormous message can't bloat its index entry. */
+    maxTokensPerMessage: num('SEARCH_MAX_TOKENS_PER_MESSAGE', 200),
   },
 
   ws: {
@@ -51,5 +73,13 @@ export const config = {
     heartbeatIntervalMs: num('WS_HEARTBEAT_MS', 30_000),
     /** How long a "typing" state is honoured before it expires on its own. */
     typingTtlMs: num('WS_TYPING_TTL_MS', 5_000),
+  },
+
+  presence: {
+    /**
+     * How long after its last heartbeat a connection still counts as online. Must comfortably
+     * exceed ws.heartbeatIntervalMs, or a live connection flickers offline between beats.
+     */
+    ttlMs: num('PRESENCE_TTL_MS', 90_000),
   },
 } as const;

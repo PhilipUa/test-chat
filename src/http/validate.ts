@@ -15,6 +15,19 @@ export function optionalPositiveInt(value: unknown, field: string): number | und
   return positiveInt(value, field);
 }
 
+/**
+ * For optional parameters where 0 is meaningful — a `since=0` cursor means "everything from the
+ * beginning", which is exactly what a client with no prior state asks for.
+ */
+export function optionalNonNegativeInt(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const n = typeof value === 'number' ? value : Number(String(value).trim());
+  if (!Number.isInteger(n) || n < 0) {
+    throw HttpError.badRequest(`${field} must be a non-negative integer`);
+  }
+  return n;
+}
+
 export function boundedInt(
   value: unknown,
   field: string,
@@ -23,6 +36,26 @@ export function boundedInt(
 ): number {
   if (value === undefined || value === null || value === '') return fallback;
   const n = positiveInt(value, field);
+  return Math.min(n, max);
+}
+
+/**
+ * Like boundedInt but accepts 0, for offsets and counts where zero is meaningful.
+ *
+ * Split out because routing an offset through positiveInt made `?offset=0` a 400 — and 0 is
+ * exactly what the first page of results asks for.
+ */
+export function boundedNonNegativeInt(
+  value: unknown,
+  field: string,
+  fallback: number,
+  max: number,
+): number {
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = typeof value === 'number' ? value : Number(String(value).trim());
+  if (!Number.isInteger(n) || n < 0) {
+    throw HttpError.badRequest(`${field} must be a non-negative integer`);
+  }
   return Math.min(n, max);
 }
 

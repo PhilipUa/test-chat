@@ -11,6 +11,11 @@ import { redis } from '../db/redis.ts';
  *                                           ever throttles themselves
  *  - survives multiple instances         -> state is in Redis, not process memory
  *
+ * Sends were initially the only limited endpoint, which was a hole: `/api/search` fans out over
+ * every message in the caller's conversations, so an unmetered loop of queries that match nothing
+ * is a cheap way to generate unbounded read load. Reads now have their own buckets — separate
+ * from sends, because the costs and the sensible limits are different.
+ *
  * Sliding window over a sorted set rather than a fixed window: a fixed window lets someone send
  * 2x the limit across a window boundary, and can't produce an honest Retry-After.
  *
@@ -110,6 +115,27 @@ export function consumeSendQuota(userId: number, conversationId: number): Promis
     `relay:rl:send:${userId}:${conversationId}`,
     config.rateLimit.limit,
     config.rateLimit.windowMs,
+  );
+}
+
+/**
+ * Quota for searching: per user, across all their conversations, because a search spans them.
+ * Exposed as a full result so the route can surface Retry-After like sends do.
+ */
+export function consumeSearchQuota(userId: number): Promise<RateLimitResult> {
+  return consume(
+    `relay:rl:search:${userId}`,
+    config.rateLimit.searchLimit,
+    config.rateLimit.searchWindowMs,
+  );
+}
+
+/** Quota for creating conversations. Cheap per call, but unbounded growth isn't free. */
+export function consumeCreateQuota(userId: number): Promise<RateLimitResult> {
+  return consume(
+    `relay:rl:create:${userId}`,
+    config.rateLimit.createLimit,
+    config.rateLimit.createWindowMs,
   );
 }
 

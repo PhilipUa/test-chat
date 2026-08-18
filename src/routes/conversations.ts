@@ -1,5 +1,7 @@
 import express from 'express';
+import { config } from '../config.ts';
 import { asyncHandler } from '../http/errors.ts';
+import { enforceRateLimit } from '../http/rate-limit-headers.ts';
 import { intArray, nonEmptyString, positiveInt } from '../http/validate.ts';
 import {
   assertParticipant,
@@ -7,6 +9,7 @@ import {
   listConversations,
   markRead,
 } from '../services/conversations.ts';
+import { consumeCreateQuota } from '../services/rate-limit.ts';
 import { publish } from '../ws/hub.ts';
 
 export const conversationsRouter = express.Router();
@@ -25,6 +28,18 @@ conversationsRouter.post(
     const body = req.body ?? {};
     const title = nonEmptyString(body.title, 'title', 200);
     const participantIds = intArray(body.participantIds, 'participantIds');
+
+    // The creator is whoever is first in the list until there's real auth to take it from.
+    // Metered so conversation creation can't be used for unbounded growth.
+    enforceRateLimit(
+      res,
+      await consumeCreateQuota(participantIds[0]!),
+      (limit) =>
+        `rate limit exceeded: at most ${limit} new conversations per ${
+          config.rateLimit.createWindowMs / 1000
+        }s`,
+    );
+
     res.status(201).json(await createConversation(title, participantIds));
   }),
 );
