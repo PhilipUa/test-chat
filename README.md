@@ -48,22 +48,26 @@ shows which replicas Envoy has discovered, and `/api/health` reports which one s
 
 ### Tests
 
-44 integration tests against the running stack:
+59 integration tests against the running stack:
 
 ```
 npm install
 npm test              # needs the stack up
 npm run typecheck
+npm run audit:tasks   # checks every requirement in tasks/ and prints the evidence
 ```
 
 Worth running against `--scale api=3` as well — a single instance is exactly what hid the
 multi-instance fan-out bug in the first place.
 
-Two scripts for the specific problems in the original build:
+Scripts for the specific problems in the original build:
 
 ```
-node scripts/probe-realtime.mjs    # does a message reach every connected client?
-node scripts/bench-send.mjs 50     # what does a send burst do to read latency?
+node scripts/probe-realtime.mjs               # does a message reach every connected client?
+node scripts/bench-send.mjs 50                # what does a send burst do to read latency?
+node scripts/audit-tasks.mjs                  # every tasks/ requirement, with evidence
+docker compose exec api npx tsx scripts/generate-demo-data.ts 30 60
+                                              # bulk demo messages, for looking at search
 ```
 
 A note on rebuilding: only source directories are bind-mounted, so `node_modules` is the one in the
@@ -99,6 +103,7 @@ Thanks — this was a good one to dig into. Everything below is in the repo as y
 | [`spec/plan.md`](spec/plan.md) | how I sequenced the work, and why in that order |
 | [`docs/03-changes.md`](docs/03-changes.md) | what I changed and why, with before/after numbers |
 | [`docs/04-tradeoffs.md`](docs/04-tradeoffs.md) | what I deliberately *didn't* do, and the reasoning |
+| [`docs/05-hardening.md`](docs/05-hardening.md) | a second pass closing the gaps the first one left, including bugs I introduced myself |
 
 ## The short version
 
@@ -145,6 +150,28 @@ identity, which only stops accidents); close the last gap in the two-store write
 the body and the id live in different databases at all; and move search off `$text` when volume
 justifies it. All three are written up in `docs/04-tradeoffs.md`.
 
-I also added a test suite (44 tests, against the real stack — the multi-instance bug is only
-visible that way) and two scripts that reproduce the original problems, so the before/after numbers
-in `docs/03-changes.md` are re-runnable rather than just claimed.
+I also added a test suite (59 tests, against the real stack — the multi-instance bug is only
+visible that way) and scripts that reproduce the original problems, so the before/after numbers in
+`docs/03-changes.md` are re-runnable rather than just claimed. `npm run audit:tasks` checks each
+requirement in `tasks/` one at a time and prints the evidence.
+
+## A second pass
+
+After the above I went back over my own work and found that the first pass had left real gaps —
+written up in [`docs/05-hardening.md`](docs/05-hardening.md). The one that mattered:
+
+**I'd only rate-limited sending, and search was the expensive endpoint.** Worse, the substring
+fallback I'd added to make partial-word search work was examining every message in the caller's
+history to return nothing — so `?q=zzzz1`, `?q=zzzz2`, … was an unmetered way to generate unbounded
+read load. Fixed on both sides: search is metered, and the fallback is now an anchored prefix match
+against an index, which took `docsExamined` from 3203 to 0 on a query that matches nothing.
+
+Also: a realtime gap the client could never detect (Redis pub/sub is at-most-once, and the
+WebSocket stays open through a Redis outage, so the browser silently stopped receiving — now the
+server sends a resync nudge and `?since=` fetches exactly the gap); typing surfaced in the sidebar
+so you can tell someone's replying in another thread; and presence, which took two attempts to get
+right.
+
+Four of the bugs in that document are ones I introduced myself, including a graceful shutdown that
+never actually ran because it waited on `server.close()`, whose callback can't fire while a
+WebSocket is open. They're listed as mine.
