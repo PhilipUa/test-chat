@@ -267,6 +267,7 @@ CLI overrides. Three signals:
 | `connections` | count | For a chat app this is usually what runs out first: each connection is a live socket, a place in the heartbeat sweep, and a share of the fan-out. The default. |
 | `cpu` | percent of **one** core | A Node process is effectively single-threaded, so 100% means the event loop is saturated. Against all 15 cores a pinned process reads ~7% and no sane watermark ever fires. |
 | `memory` | MB resident | Absolute, not a percentage. A percentage needs a limit, and no container memory limit is set here (`/sys/fs/cgroup/memory.max` is `max`), so the only available "limit" is the host's 8.3 GB — which would describe the host, not the process. |
+| `rpm` | requests/min | HTTP requests served, over a short sliding window. Excludes `/api/health` — the autoscaler polls it to find replicas, so counting it would make the scaler's own measuring look like load, and it would climb to `max` on its own. |
 
 ```json
 { "min": 2, "max": 6, "cooldownSeconds": 30,
@@ -359,3 +360,67 @@ The scaled-up phase asserts the count went *up*, not merely that the stack is co
 autoscaling silently did nothing fails. `every replica now serving is fully wired` earns its place
 separately: a replica an autoscaler just started could answer `/api/health` while its Redis subscriber
 never came up, passing every distribution check and delivering no realtime at all.
+
+### Seeing each signal actually move
+
+A fair complaint about the first version: a connections-driven run shows the socket count climbing and CPU
+sitting flat, so it never demonstrates the CPU rule at all. Each signal needs its own kind of load, so the
+driver now generates the load that matches the rule it is testing:
+
+```
+npm run test:postman                    # hold sockets open        → connections
+npm run test:postman -- --signal cpu    # hammer the dearest read  → cpu
+npm run test:postman -- --signal rpm    # hammer the cheapest read → rpm
+```
+
+```
+PHASE 2 — scaled up by the autoscaler, on the "cpu" signal
+  before load: ddf9af451d8d=0.8% cpu  ceb097695bb9=0.7% cpu  020edeff43e2=0.7% cpu
+  driving HTTP load to push cpu over its up watermark of 15…
+  under load : ceb097695bb9=26% cpu  020edeff43e2=22% cpu  ddf9af451d8d=24% cpu
+    scale up: 3 → 4 — above the watermark on max cpu 26.0% per replica (up>15% down<5%)
+PHASE 3 — scaled down by the autoscaler
+  after load : ceb097695bb9=0.5% cpu  020edeff43e2=2.3% cpu  5a4201676824=1.8% cpu  ddf9af451d8d=0.4% cpu
+    scale down: 4 → 3 — below the watermark on max cpu 2.3% per replica
+```
+
+`memory` is deliberately not offered as a driver option. RSS here is dominated by baseline heap and barely
+moves under synthetic load, so a demo of it would be theatre — a memory rule is for leak and pressure
+protection, not load tracking, and pretending otherwise would be the same kind of vacuous check as the
+eviction test above.
+
+**Building the rpm signal exposed a real problem with a full-minute window.** The first version read *higher*
+after the load was dropped than during it, and phase 3 kept scaling up:
+
+```
+under load : 4684 rpm
+after load : 11983 rpm      ← the 60s window still held the whole burst
+scale up: 4 → 5 — above the watermark on mean rpm 11943.9/min
+```
+
+Two things were wrong: a 60s window makes every rate-driven scale-down lag a full minute, and "idle" read
+966 rpm because the *previous* test's traffic was still inside the window. The window is now 15s
+(`REQUEST_RATE_WINDOW_SECONDS`), still expressed per minute — short enough to decay quickly, long enough to
+smooth a single spike. Idle now reads 0, and the same run reads 45 → 15,200 → 0.
+
+### Is a newly started replica automatically in the pub/sub?
+
+Two-part answer, and the driver now asserts both rather than leaving it to be assumed.
+
+A new replica boots with its Redis **subscriber connected** (`realtimeConnected: true`) but **no channel
+subscriptions** — `channels.acquire` subscribes to a conversation only when one of that replica's own sockets
+asks for it. That is the refcounting working as designed: subscribing every replica to every conversation is
+the design `ws/channels.ts` exists to avoid.
+
+```
+after scaling to 4:
+  ca6713834b70 channels=0 realtimeConnected=true      ← the new one, nothing wants a channel yet
+after 8 sockets connect:
+  ca6713834b70 conn=4 channels=1                       ← subscribed on demand
+published via ba2e45aa32f5 (a DIFFERENT replica)
+per-socket copies: [1,1,1,1,1,1,1,1]                   ← every socket got it exactly once
+```
+
+So: automatic, but on demand rather than eagerly. `npm run test:postman` now fails the scaled-up phase if the
+replica the autoscaler started does not take a channel and receive a message published through another
+replica.

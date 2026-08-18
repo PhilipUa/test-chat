@@ -19,6 +19,9 @@
  *  - `memory` — resident set size in MB, absolute rather than a percentage. A percentage needs a limit,
  *    and when no container memory limit is set the only "limit" available is the host's RAM, which makes
  *    the percentage meaningless.
+ *  - `rpm` — HTTP requests per minute served by a replica, over a sliding one-minute window. Excludes
+ *    `/api/health`, because the autoscaler polls it to find replicas and a metric that rises when you
+ *    measure it would climb to `max` on its own.
  *
  * The default config scales on connections. CPU is the conventional choice and would be the wrong default
  * here for the same reason it would be wrong under a Kubernetes HPA: an instance holding 10,000 idle
@@ -38,6 +41,7 @@ const SIGNALS = {
   // A replica's baseline heap does not move to its neighbours when it goes away, so projecting what
   // memory would be after a scale-down is not sound — see the anti-flap check below.
   memory: { read: (m) => m.memoryMb ?? 0, unit: 'MB', proportional: false },
+  rpm: { read: (m) => m.rpm ?? 0, unit: '/min', proportional: true },
 };
 
 const AGGREGATES = {

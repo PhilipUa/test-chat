@@ -3,10 +3,13 @@
     "Autoscaling rules for the api service. Used by `npm run autoscale`; every value can be overridden",
     "on the command line (see scripts/autoscale.mjs --help).",
     "",
-    "signal:  connections | cpu | memory",
+    "signal:  connections | cpu | memory | rpm",
     "           connections  WebSocket connections held by a replica",
     "           cpu          percent of ONE core, from the process's own cpuUsage()",
     "           memory       resident set size in MB (absolute — a percentage needs a limit)",
+    "           rpm          HTTP requests per minute, over a short sliding window. Excludes",
+    "                        /api/health: the autoscaler polls it to find replicas, and a metric",
+    "                        that rises when you measure it climbs to max on its own.",
     "up/down: watermarks in that signal's units. Leave a wide gap between them, or the two touch and",
     "         the scaler oscillates.",
     "aggregate: mean (default) | max. `max` scales on the hottest replica, which is usually right for",
@@ -32,10 +35,12 @@
   "$examples": {
     "cpu only": [{ "signal": "cpu", "up": 70, "down": 20, "aggregate": "max" }],
     "memory only": [{ "signal": "memory", "up": 400, "down": 150, "proportional": false }],
-    "all three": [
+    "request rate only": [{ "signal": "rpm", "up": 600, "down": 200 }],
+    "all four": [
       { "signal": "connections", "up": 500, "down": 150 },
       { "signal": "cpu", "up": 70, "down": 20, "aggregate": "max" },
-      { "signal": "memory", "up": 400, "down": 150, "proportional": false }
+      { "signal": "memory", "up": 400, "down": 150, "proportional": false },
+      { "signal": "rpm", "up": 600, "down": 200 }
     ]
   }
 }

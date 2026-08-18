@@ -1,6 +1,7 @@
 import express, { type Express } from 'express';
 import { errorHandler } from './middleware/error-handler.ts';
 import { instanceHeader } from './middleware/instance-header.ts';
+import { countRequest } from './middleware/request-rate.ts';
 import { apiRouter } from './routes/index.ts';
 
 /**
@@ -18,6 +19,9 @@ export function createApp(): Express {
 
   // Which replica served this. First, so it covers static files and error responses as well.
   app.use(instanceHeader);
+
+  // Request rate, for the autoscaler. Excludes /api/health — see the note in request-rate.ts.
+  app.use(countRequest);
 
   // 256kb is well above any legitimate message and low enough that a huge body is rejected by the
   // parser (413) rather than being buffered.

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpuPercentBetween, memoryMbOf } from '../src/util/process-metrics.ts';
+import { cpuPercentBetween, memoryMbOf, ratePerMinute } from '../src/util/process-metrics.ts';
 
 /**
  * Unit tests for the process metrics the autoscaler scales on.
@@ -61,5 +61,32 @@ describe('memoryMbOf', () => {
 
   it('is zero for zero', () => {
     assert.equal(memoryMbOf(0), 0);
+  });
+});
+
+describe('ratePerMinute', () => {
+  it('scales a count over its window to a per-minute rate', () => {
+    assert.equal(ratePerMinute(30, 60), 30);
+  });
+
+  it('extrapolates a shorter window rather than understating the rate', () => {
+    // Right after boot the window is only a few seconds long. Dividing by a full minute anyway would
+    // report a twelfth of the real traffic, and a scaler would sit still through a genuine spike.
+    assert.equal(ratePerMinute(30, 30), 60);
+    assert.equal(ratePerMinute(10, 5), 120);
+  });
+
+  it('is zero for no requests', () => {
+    assert.equal(ratePerMinute(0, 60), 0);
+  });
+
+  it('returns 0 rather than Infinity before any time has passed', () => {
+    assert.equal(ratePerMinute(5, 0), 0);
+  });
+
+  it('reports a fractional rate rather than rounding quiet traffic to zero', () => {
+    // 1 request a minute is not the same as none, and a `down` watermark has to be able to tell them apart.
+    assert.equal(ratePerMinute(1, 60), 1);
+    assert.ok(ratePerMinute(1, 120) > 0);
   });
 });

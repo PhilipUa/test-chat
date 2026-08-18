@@ -55,16 +55,16 @@ npm run autoscale -- --signal cpu --up 70 --down 20 --aggregate max
 npm run autoscale -- --signal memory --up 400 --down 150
 ```
 
-What it scales on is configuration: `connections`, `cpu` (percent of one core) or `memory` (MB resident),
-alone or combined, in [`autoscale.config.json`](autoscale.config.json). `/api/health` reports all three
-per replica.
+What it scales on is configuration: `connections`, `cpu` (percent of one core), `memory` (MB resident) or
+`rpm` (requests per minute), alone or combined, in [`autoscale.config.json`](autoscale.config.json).
+`/api/health` reports all four per replica.
 
 Realtime state is shared through Redis, so replicas are interchangeable. `curl localhost:9901/clusters`
 shows which replicas Envoy has discovered, and `/api/health` reports which one served you.
 
 ### Tests
 
-173 tests — 81 API-level, 17 in a real browser, 75 unit tests (the error-handling helpers, the
+178 tests — 81 API-level, 17 in a real browser, 80 unit tests (the error-handling helpers, the
 WebSocket connection lifecycle, the process error policy, the autoscaling rules, the process metrics, and
 the browser helpers):
 
@@ -74,6 +74,8 @@ npm test              # needs the stack up
 npm run typecheck
 npm run audit:tasks   # checks every requirement in tasks/ and prints the evidence
 npm run test:postman  # drives the autoscaler and verifies each phase with the Postman collection
+                      #   -- --signal cpu   drive CPU up instead of connections
+                      #   -- --signal rpm   drive request rate up instead
 npm run test:postman:collection   # just the collection, against the stack as it is
 ```
 

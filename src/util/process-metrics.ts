@@ -72,3 +72,48 @@ export function startCpuSampling(intervalMs: number): { cpuPercent: () => number
     stop: () => clearInterval(timer),
   };
 }
+
+/**
+ * A count over a window, as a per-minute rate.
+ *
+ * Extrapolated from the window actually observed rather than divided by a fixed minute: right after boot
+ * the window is only a few seconds long, and dividing by 60 anyway would report a twelfth of the real
+ * traffic — a scaler would sit still through a genuine spike.
+ */
+export function ratePerMinute(count: number, spanSeconds: number): number {
+  if (spanSeconds <= 0) return 0;
+  return (count / spanSeconds) * 60;
+}
+
+/**
+ * Requests per minute, over a sliding window of one-second buckets.
+ *
+ * Buckets rather than a running total, so the rate reflects recent traffic instead of everything since
+ * boot: a scaler needs to know that a burst has *stopped*, which a cumulative counter can never say.
+ */
+export function startRequestRateSampling(windowSeconds = 60): {
+  record: () => void;
+  perMinute: () => number;
+  stop: () => void;
+} {
+  const buckets = new Array<number>(windowSeconds).fill(0);
+  let cursor = 0;
+  let observedSeconds = 0;
+
+  const timer = setInterval(() => {
+    cursor = (cursor + 1) % windowSeconds;
+    // Clear the bucket we are about to reuse, which is what makes the window slide.
+    buckets[cursor] = 0;
+    observedSeconds = Math.min(observedSeconds + 1, windowSeconds);
+  }, 1_000);
+  timer.unref();
+
+  return {
+    record: () => {
+      buckets[cursor] = (buckets[cursor] ?? 0) + 1;
+    },
+    // `observedSeconds + 1` because the current bucket is partially elapsed and still counts.
+    perMinute: () => ratePerMinute(buckets.reduce((n, c) => n + c, 0), observedSeconds + 1),
+    stop: () => clearInterval(timer),
+  };
+}

@@ -31,6 +31,17 @@ export const config = {
     maxBodyLength: num('MESSAGE_MAX_LENGTH', 4000),
   },
 
+  metrics: {
+    /**
+     * Window for the request-rate signal, expressed per minute whatever the window is.
+     *
+     * 15s rather than a full minute because an autoscaler has to notice load *stopping*: with a 60s window
+     * every rate-driven scale-down lags a minute behind reality, and a burst keeps the scaler climbing long
+     * after the traffic has gone. Short enough to decay quickly, long enough to smooth a single spike.
+     */
+    requestRateWindowSeconds: num('REQUEST_RATE_WINDOW_SECONDS', 15),
+  },
+
   conversations: {
     /**
      * Default and maximum page size for the inbox. Bounded because the client refetches this list on

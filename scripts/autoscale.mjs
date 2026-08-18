@@ -15,6 +15,7 @@
  *   node scripts/autoscale.mjs --config my-rules.json        # a different rule set
  *   node scripts/autoscale.mjs --signal cpu --up 70 --down 20 --aggregate max
  *   node scripts/autoscale.mjs --signal memory --up 400 --down 150
+ *   node scripts/autoscale.mjs --signal rpm --up 600 --down 200
  *   node scripts/autoscale.mjs --min 2 --max 8 --interval 10 --cooldown 30
  *
  * `--signal` replaces the configured rules with a single one, which is the quickest way to try a different
@@ -67,6 +68,7 @@ const RULE_DEFAULTS = {
   connections: { up: 2, down: 1 },
   cpu: { up: 70, down: 20, aggregate: 'max' },
   memory: { up: 400, down: 150, proportional: false },
+  rpm: { up: 600, down: 200 },
 };
 
 function resolveRules() {
@@ -149,6 +151,7 @@ async function sampleMetrics(samples = 24) {
           connections: body.connections ?? 0,
           cpuPercent: body.cpuPercent ?? 0,
           memoryMb: body.memoryMb ?? 0,
+          rpm: body.requestsPerMinute ?? 0,
         });
       }
     } catch {
@@ -169,6 +172,7 @@ function describeReplicas(byInstance) {
       if (wanted.has('connections')) parts.push(`${m.connections} conn`);
       if (wanted.has('cpu')) parts.push(`${m.cpuPercent.toFixed(1)}% cpu`);
       if (wanted.has('memory')) parts.push(`${m.memoryMb}MB`);
+      if (wanted.has('rpm')) parts.push(`${m.rpm.toFixed(0)} rpm`);
       return `${id}=${parts.join('/')}`;
     })
     .join('  ');

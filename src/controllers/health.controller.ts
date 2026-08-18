@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { redis } from '../db/redis.ts';
+import { requestsPerMinute } from '../middleware/request-rate.ts';
 import { memoryMbOf, startCpuSampling } from '../util/process-metrics.ts';
 import { withFallback } from '../util/resilience.ts';
 import { hubStats } from '../ws/hub.ts';
@@ -40,5 +41,6 @@ export async function health(_req: Request, res: Response): Promise<void> {
     // app anywhere else. See scripts/autoscale-policy.mjs for what each one means.
     cpuPercent: Number(cpu.cpuPercent().toFixed(1)),
     memoryMb: memoryMbOf(process.memoryUsage().rss),
+    requestsPerMinute: requestsPerMinute(),
   });
 }
