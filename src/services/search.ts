@@ -49,6 +49,76 @@ export interface SearchResponse {
   matchedBy: 'text' | 'prefix' | 'none';
 }
 
+/** What a strategy returns: enough to build a SearchHit, plus the id. */
+type SearchDoc = Pick<MessageBody, '_id' | 'conversationId' | 'senderId' | 'body' | 'createdAt'>;
+
+interface Strategy {
+  name: SearchHit['matchedBy'];
+  run(
+    base: Filter<MessageBody>,
+    query: string,
+    page: { limit: number; offset: number },
+  ): Promise<SearchDoc[]>;
+}
+
+/**
+ * Search strategies, most precise first.
+ *
+ * Tier 3.2 of the refactoring plan. These were two inline blocks with the fallback expressed as
+ * `if (!docs.length)` control flow. As a list, the precedence is explicit and a third strategy
+ * (fuzzy matching, or an external engine per docs/04-tradeoffs.md) is additive rather than another
+ * branch in the middle of the function.
+ */
+const STRATEGIES: Strategy[] = [
+  {
+    // Mongo's text index: ranked by relevance, handles multiple terms, stemming ("meeting" matches
+    // "meetings") and quoted phrases. The one that scales, because it's index-backed.
+    name: 'text',
+    run: (base, query, { limit, offset }) =>
+      messageBodies()
+        .find(
+          { ...base, $text: { $search: query } },
+          {
+            projection: {
+              conversationId: 1,
+              senderId: 1,
+              body: 1,
+              createdAt: 1,
+              score: { $meta: 'textScore' },
+            },
+            sort: { score: { $meta: 'textScore' }, _id: -1 },
+            skip: offset,
+            limit,
+          },
+        )
+        .toArray(),
+  },
+  {
+    // Indexed prefix match, for the partial words $text cannot see: "desig" finds nothing in
+    // "design", which reads as broken to anyone typing into a search box.
+    //
+    // Anchoring with ^ against the multikey bodyTokens index is what keeps this cheap. The first
+    // version was an unanchored regex over `body`, which examined every document in the caller's
+    // conversations — explain reported docsExamined 3203 for nReturned 0.
+    name: 'prefix',
+    run: async (base, query, { limit, offset }) => {
+      const prefixes = prefixTermsFor(query);
+      if (!prefixes.length) return [];
+      return messageBodies()
+        .find(
+          { ...base, $and: prefixes.map((p) => ({ bodyTokens: { $regex: p } })) },
+          {
+            projection: { conversationId: 1, senderId: 1, body: 1, createdAt: 1 },
+            sort: { _id: -1 },
+            skip: offset,
+            limit,
+          },
+        )
+        .toArray();
+    },
+  },
+];
+
 export interface SearchOptions {
   limit?: number;
   offset?: number;
@@ -92,42 +162,14 @@ export async function searchMessages(
     };
   }
 
-  // Strategy 1: the text index, ranked by relevance.
+  // Try each strategy in order and take the first that finds anything.
+  let docs: SearchDoc[] = [];
   let matchedBy: SearchHit['matchedBy'] = 'text';
-  let docs = await messageBodies()
-    .find(
-      { ...base, $text: { $search: query } },
-      {
-        projection: {
-          conversationId: 1,
-          senderId: 1,
-          body: 1,
-          createdAt: 1,
-          score: { $meta: 'textScore' },
-        },
-        sort: { score: { $meta: 'textScore' }, _id: -1 },
-        skip: offset,
-        limit: limit + 1,
-      },
-    )
-    .toArray();
-
-  // Strategy 2: indexed prefix match, only if the text index found nothing.
-  if (!docs.length) {
-    const prefixes = prefixTermsFor(query);
-    if (prefixes.length) {
-      docs = await messageBodies()
-        .find(
-          { ...base, $and: prefixes.map((p) => ({ bodyTokens: { $regex: p } })) },
-          {
-            projection: { conversationId: 1, senderId: 1, body: 1, createdAt: 1 },
-            sort: { _id: -1 },
-            skip: offset,
-            limit: limit + 1,
-          },
-        )
-        .toArray();
-      matchedBy = 'prefix';
+  for (const strategy of STRATEGIES) {
+    docs = await strategy.run(base, query, { limit: limit + 1, offset });
+    if (docs.length) {
+      matchedBy = strategy.name;
+      break;
     }
   }
 
