@@ -170,6 +170,27 @@ export async function waitUntilOffline(viewerId, conversationId, userId, timeout
 }
 
 /**
+ * Sends one message that the test depends on landing.
+ *
+ * `post()` alone hides why a test then fails: a throttled send returns 429, nothing is delivered, and the
+ * assertion that was waiting for it times out with no clue as to the cause. That is exactly how the unread
+ * badge test failed once under load — as "timeout waiting for badge" rather than "the send was throttled".
+ * This honours a 429's Retry-After once and throws with the status otherwise.
+ */
+export async function sendMessage(payload) {
+  let res = await post('/api/messages', payload);
+  if (res.status === 429) {
+    await sleep((Number(res.headers.get('retry-after')) || 1) * 1000 + 250);
+    // Same clientId, so the retry is the idempotent path rather than a second message.
+    res = await post('/api/messages', payload);
+  }
+  if (res.status !== 201 && res.status !== 200) {
+    throw new Error(`send failed: ${res.status} ${res.text}`);
+  }
+  return res.body;
+}
+
+/**
  * Posts `count` messages into a conversation for tests that need history.
  *
  * Spreads sends across the participants and honours a 429's Retry-After, because the rate

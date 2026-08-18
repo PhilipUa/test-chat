@@ -73,6 +73,8 @@ npm install
 npm test              # needs the stack up
 npm run typecheck
 npm run audit:tasks   # checks every requirement in tasks/ and prints the evidence
+npm run verify        # typecheck + suite + task audit + every probe, in one command
+npm run probe:signals # the autoscaler driven by each of connections, cpu and rpm
 npm run test:postman  # drives the autoscaler and verifies each phase with the Postman collection
                       #   -- --signal cpu   drive CPU up instead of connections
                       #   -- --signal rpm   drive request rate up instead
@@ -95,6 +97,9 @@ node scripts/probe-scale-transition.mjs       # does changing the replica count 
 node scripts/probe-failover.mjs               # what a connected user experiences when a replica
                                               # goes away, hard and gracefully (stops one at a time,
                                               # and starts it again afterwards)
+node scripts/probe-redis-outage.mjs           # what survives losing Redis, and what recovers after
+                                              # (stops the redis container, starts it again)
+node scripts/probe-soak.mjs --minutes 3       # churn for a while, then check nothing leaked
 node scripts/bench-send.mjs 50                # what does a send burst do to read latency?
 node scripts/audit-tasks.mjs                  # every tasks/ requirement, with evidence
 docker compose exec api npx tsx scripts/generate-demo-data.ts 30 60

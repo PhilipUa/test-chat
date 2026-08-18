@@ -15,7 +15,12 @@
     "probe:scaling": "node scripts/probe-scaling.mjs",
     "probe:transition": "node scripts/probe-scale-transition.mjs",
     "autoscale": "node scripts/autoscale.mjs",
-    "test:postman:collection": "npx --yes newman run postman/relay-scaling.postman_collection.json -e postman/relay-local.postman_environment.json --reporters cli"
+    "test:postman:collection": "npx --yes newman run postman/relay-scaling.postman_collection.json -e postman/relay-local.postman_environment.json --reporters cli",
+    "probe:redis": "node scripts/probe-redis-outage.mjs",
+    "probe:soak": "node scripts/probe-soak.mjs",
+    "probe:failover": "node scripts/probe-failover.mjs",
+    "probe:signals": "node scripts/test-postman-scaling.mjs --signal connections && node scripts/test-postman-scaling.mjs --signal cpu && node scripts/test-postman-scaling.mjs --signal rpm",
+    "verify": "npm run typecheck && npm test && npm run audit:tasks && npm run probe:scaling && npm run probe:transition && npm run probe:failover && npm run probe:redis && npm run probe:soak"
   },
   "dependencies": {
     "express": "^4.19.2",

@@ -1,7 +1,15 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { BASE, freshConversation, post, seedMessages, sleep, unique } from './helpers.mjs';
+import {
+  BASE,
+  freshConversation,
+  post,
+  seedMessages,
+  sendMessage,
+  sleep,
+  unique,
+} from './helpers.mjs';
 
 /**
  * Browser coverage for web/app.js.
@@ -176,6 +184,10 @@ describe('UI: sending', () => {
     try {
       await openConversation(page, conv.title);
       // Burn the allowance from the server side, so the UI hits a 429 on its first attempt.
+      //
+      // Deliberately raw `post` and not `sendMessage`: this is the one send in the file that *wants* to be
+      // throttled, and sendMessage honours a Retry-After and sends again — which quietly refills the very
+      // allowance this test exists to exhaust. (Learned by breaking it with a blanket replace.)
       for (let i = 0; i < 7; i++) {
         await post('/api/messages', {
           conversationId: conv.id, senderId: 1, body: `burn ${i}`, clientId: unique('burn'),
@@ -260,10 +272,10 @@ describe('UI: loading races', () => {
     const b = await freshConversation([1, 2, 3], unique('ui-switch-b'));
     const aMarker = `alpha-${Date.now()}`;
     const bMarker = `beta-${Date.now()}`;
-    await post('/api/messages', {
+    await sendMessage({
       conversationId: a.id, senderId: 2, body: aMarker, clientId: unique('a'),
     });
-    await post('/api/messages', {
+    await sendMessage({
       conversationId: b.id, senderId: 2, body: bMarker, clientId: unique('b'),
     });
 
@@ -310,11 +322,11 @@ describe('UI: realtime', () => {
     // which is exactly the one the ordering is there to surface.
     const first = await freshConversation([1, 2], unique('ui-order-first'));
     const second = await freshConversation([1, 2], unique('ui-order-second'));
-    await post('/api/messages', {
+    await sendMessage({
       conversationId: first.id, senderId: 2, body: 'first activity', clientId: unique('f'),
     });
     await sleep(50);
-    await post('/api/messages', {
+    await sendMessage({
       conversationId: second.id, senderId: 2, body: 'second activity', clientId: unique('s'),
     });
 
@@ -332,7 +344,7 @@ describe('UI: realtime', () => {
       assert.match(await topTitle(), new RegExp(second.title), 'unexpected starting order');
 
       // Now `first` gets a newer message, delivered over the socket rather than by a refetch.
-      await post('/api/messages', {
+      await sendMessage({
         conversationId: first.id, senderId: 2, body: 'newest of all', clientId: unique('n'),
       });
 
@@ -358,7 +370,7 @@ describe('UI: realtime', () => {
       await waitLive(page);
       await openConversation(page, conv.title);
       const body = `from bob ${Date.now()}`;
-      await post('/api/messages', {
+      await sendMessage({
         conversationId: conv.id, senderId: 2, body, clientId: unique('live'),
       });
       await page.waitForFunction(
@@ -413,7 +425,7 @@ describe('UI: realtime', () => {
     const { ctx, page } = await openApp(1);
     try {
       await waitLive(page);
-      await post('/api/messages', {
+      await sendMessage({
         conversationId: conv.id, senderId: 2, body: 'unread please', clientId: unique('u'),
       });
       await page.waitForFunction(
@@ -422,7 +434,7 @@ describe('UI: realtime', () => {
             (li) => li.textContent.includes(t) && li.querySelector('.badge'),
           ),
         conv.title,
-        { timeout: 8000 },
+        { timeout: 20_000 },
       );
     } finally {
       await ctx.close();
@@ -434,7 +446,7 @@ describe('UI: search', () => {
   it('searches and renders results, then opens one', async () => {
     const conv = await freshConversation([1, 2], unique('ui-search'));
     const needle = `findme${Date.now()}`;
-    await post('/api/messages', {
+    await sendMessage({
       conversationId: conv.id, senderId: 1, body: `a message about ${needle}`, clientId: unique('s'),
     });
 
