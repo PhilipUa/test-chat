@@ -40,8 +40,18 @@ const state = {
   pending: new Map(),
   /** Ids already rendered in the open conversation, so a reconnect catch-up can't double up. */
   rendered: new Set(),
-  /** userId -> { name, timer } for whoever is currently typing here. */
+  /**
+   * conversationId -> Map(userId -> { name, timer }).
+   *
+   * Keyed by conversation, not flat: typing used to be dropped for any conversation that wasn't
+   * open, so you couldn't tell someone was replying in another thread — the indicator only
+   * existed if you were already looking at it.
+   */
   typing: new Map(),
+  /** conversationId -> Set(userId) of participants currently online. */
+  presence: new Map(),
+  /** conversationId -> highest message id this tab has seen, for `?since=` catch-up. */
+  lastSeen: new Map(),
   ws: null,
   wsAttempts: 0,
   lastTypingSentAt: 0,
@@ -120,11 +130,33 @@ function renderSidebar() {
 
     const preview = document.createElement('span');
     preview.className = 'conv-preview';
-    preview.textContent = c.lastMessage
-      ? `${userName(c.lastMessage.senderId)}: ${c.lastMessage.body}`
-      : 'No messages yet';
+    // Typing wins over the last-message preview: it's the more current information, and it's the
+    // whole point of surfacing typing outside the open conversation.
+    const typists = typistsIn(c.id);
+    if (typists.length) {
+      preview.classList.add('typing-preview');
+      preview.textContent =
+        typists.length === 1 ? `${typists[0]} is typing…` : `${typists.length} people are typing…`;
+    } else {
+      preview.textContent = c.lastMessage
+        ? `${userName(c.lastMessage.senderId)}: ${c.lastMessage.body}`
+        : 'No messages yet';
+    }
 
     main.append(title, preview);
+
+    // A dot for any other participant who's currently connected.
+    const online = onlineIn(c.id);
+    if ((c.participants ?? []).some((p) => online.has(p.id))) {
+      const dot = document.createElement('span');
+      dot.className = 'online-dot';
+      dot.title = (c.participants ?? [])
+        .filter((p) => online.has(p.id))
+        .map((p) => p.name)
+        .join(', ') + ' online';
+      title.prepend(dot);
+    }
+
     li.appendChild(main);
 
     // Unread count comes from the server now, so it survives a reload and is the same in
@@ -148,7 +180,6 @@ async function openConversation(id) {
   state.viewingSearch = false;
   state.rendered.clear();
   state.pending.clear();
-  clearTyping();
 
   const conv = state.conversations.find((c) => c.id === id);
   el('title').textContent = conv?.title ?? `#${id}`;
@@ -163,7 +194,10 @@ async function openConversation(id) {
   el('loadOlder').style.display = page.hasMore ? 'block' : 'none';
 
   for (const m of page.messages) appendMessage(m);
+  if (page.latestId) state.lastSeen.set(id, page.latestId);
   scrollToBottom();
+  renderTyping();
+  renderPresence();
   await markRead();
 }
 
@@ -214,7 +248,13 @@ function buildMessage(m) {
 
 function appendMessage(m) {
   if (m.id && state.rendered.has(m.id)) return;
-  if (m.id) state.rendered.add(m.id);
+  if (m.id) {
+    state.rendered.add(m.id);
+    const conversationId = m.conversationId ?? state.activeConversation;
+    if (conversationId && m.id > (state.lastSeen.get(conversationId) ?? 0)) {
+      state.lastSeen.set(conversationId, m.id);
+    }
+  }
 
   // If this is the broadcast of something we sent optimistically, upgrade that bubble in place
   // instead of appending a second copy of the same message.
@@ -288,12 +328,9 @@ function connectWs() {
     state.wsAttempts = 0;
     setConnectionStatus('live', false);
     subscribe();
-    // Catch up on anything sent while we were away.
-    if (state.activeConversation && !state.viewingSearch) {
-      const active = state.activeConversation;
-      await loadConversations().catch(() => {});
-      await openConversation(active).catch(() => {});
-    }
+    // Catch up on anything published while we were away. Previously this refetched the whole open
+    // conversation; `?since=` fetches only the gap.
+    await catchUp();
   };
 
   ws.onmessage = (ev) => {
@@ -339,8 +376,53 @@ function handleEvent(event) {
       return onTypingEvent(event);
     case 'read':
       return onReadEvent(event);
+    case 'presence':
+      return onPresenceEvent(event);
+    case 'presence-snapshot':
+      return onPresenceSnapshot(event);
+    case 'resync':
+      // The server lost and regained its Redis subscriber, so events published in between were
+      // dropped. Our socket never closed, so nothing else would have told us.
+      return void catchUp();
     default:
       return;
+  }
+}
+
+/**
+ * Pulls anything missed since the last id we saw, rather than refetching whole conversations.
+ *
+ * Realtime here is best-effort (Redis pub/sub is at-most-once); this is what makes it eventually
+ * complete. Cheap enough to run on every reconnect and every resync nudge.
+ */
+async function catchUp() {
+  // Unread counts and previews for conversations we aren't looking at.
+  await loadConversations().catch(() => {});
+
+  const id = state.activeConversation;
+  if (!id || state.viewingSearch) return;
+
+  const since = state.lastSeen.get(id);
+  if (!since) {
+    await openConversation(id).catch(() => {});
+    return;
+  }
+
+  try {
+    let cursor = since;
+    // `hasMore` means the gap was bigger than one page; keep walking forwards.
+    for (let guard = 0; guard < 20; guard++) {
+      const page = await api(
+        `/api/messages?conversationId=${id}&userId=${state.userId}&since=${cursor}`,
+      );
+      for (const m of page.messages) appendMessage(m);
+      if (page.latestId) cursor = page.latestId;
+      if (!page.hasMore) break;
+    }
+    await markRead();
+  } catch {
+    // Falling back to a full reload of the conversation is always correct, just heavier.
+    await openConversation(id).catch(() => {});
   }
 }
 
@@ -352,7 +434,7 @@ function onMessageEvent(msg) {
   }
 
   // Someone who just sent a message is no longer typing.
-  stopTyping(msg.senderId);
+  stopTyping(msg.conversationId, msg.senderId);
 
   if (msg.conversationId === state.activeConversation && !state.viewingSearch) {
     appendMessage(msg);
@@ -374,40 +456,53 @@ function onReadEvent(event) {
 /* --------------------------------------------------- typing indicator */
 
 function onTypingEvent(event) {
-  if (event.conversationId !== state.activeConversation) return;
   if (event.userId === state.userId) return;
 
+  // Kept per conversation, not just for the open one, so the sidebar can show it too.
   if (!event.isTyping) {
-    stopTyping(event.userId);
+    stopTyping(event.conversationId, event.userId);
     return;
   }
 
-  const existing = state.typing.get(event.userId);
+  const forConversation = state.typing.get(event.conversationId) ?? new Map();
+  const existing = forConversation.get(event.userId);
   if (existing) clearTimeout(existing.timer);
   // TTL, so a client that disconnects mid-sentence doesn't leave someone "typing" forever.
-  state.typing.set(event.userId, {
+  forConversation.set(event.userId, {
     name: event.userName,
-    timer: setTimeout(() => stopTyping(event.userId), event.ttlMs ?? 5000),
+    timer: setTimeout(() => stopTyping(event.conversationId, event.userId), event.ttlMs ?? 5000),
   });
+  state.typing.set(event.conversationId, forConversation);
   renderTyping();
+  renderSidebar();
 }
 
-function stopTyping(userId) {
-  const existing = state.typing.get(userId);
+function stopTyping(conversationId, userId) {
+  const forConversation = state.typing.get(conversationId);
+  const existing = forConversation?.get(userId);
   if (!existing) return;
   clearTimeout(existing.timer);
-  state.typing.delete(userId);
+  forConversation.delete(userId);
+  if (!forConversation.size) state.typing.delete(conversationId);
   renderTyping();
+  renderSidebar();
 }
 
 function clearTyping() {
-  for (const { timer } of state.typing.values()) clearTimeout(timer);
+  for (const forConversation of state.typing.values()) {
+    for (const { timer } of forConversation.values()) clearTimeout(timer);
+  }
   state.typing.clear();
   renderTyping();
 }
 
+/** Names of everyone typing in a conversation. */
+function typistsIn(conversationId) {
+  return [...(state.typing.get(conversationId)?.values() ?? [])].map((t) => t.name);
+}
+
 function renderTyping() {
-  const names = [...state.typing.values()].map((t) => t.name);
+  const names = state.activeConversation ? typistsIn(state.activeConversation) : [];
   const node = el('typing');
   if (!names.length) {
     node.textContent = '';
@@ -443,6 +538,48 @@ el('text').addEventListener('input', (e) => {
   // If they stop typing without sending, retract the indicator ourselves.
   typingStopTimer = setTimeout(() => sendTyping(false), 3000);
 });
+
+/* ----------------------------------------------------------- presence */
+
+function onPresenceEvent(event) {
+  const set = state.presence.get(event.conversationId) ?? new Set();
+  if (event.online) set.add(event.userId);
+  else set.delete(event.userId);
+  state.presence.set(event.conversationId, set);
+  renderPresence();
+  renderSidebar();
+}
+
+/** Sent right after subscribing, so we aren't blind until somebody's status changes. */
+function onPresenceSnapshot(event) {
+  for (const entry of event.conversations ?? []) {
+    state.presence.set(entry.conversationId, new Set(entry.online ?? []));
+  }
+  renderPresence();
+  renderSidebar();
+}
+
+function onlineIn(conversationId) {
+  return state.presence.get(conversationId) ?? new Set();
+}
+
+function renderPresence() {
+  const node = el('presence');
+  const id = state.activeConversation;
+  if (!id || state.viewingSearch) {
+    node.textContent = '';
+    return;
+  }
+  const conv = state.conversations.find((c) => c.id === id);
+  const others = conv?.participants ?? [];
+  if (!others.length) {
+    node.textContent = '';
+    return;
+  }
+  const online = onlineIn(id);
+  const names = others.filter((p) => online.has(p.id)).map((p) => p.name);
+  node.textContent = names.length ? `${names.join(', ')} online` : 'nobody else online';
+}
 
 /* -------------------------------------------------------------- send */
 
@@ -507,27 +644,38 @@ el('searchForm').onsubmit = async (e) => {
   e.preventDefault();
   const q = el('search').value.trim();
   if (!q) return;
-  try {
-    const response = await api(`/api/search?q=${encodeURIComponent(q)}&userId=${state.userId}`);
-    renderResults(q, response);
-  } catch (err) {
-    notice(`Search failed: ${err.message}`);
-  }
+  await runSearch(q, 0, false);
 };
 
-function renderResults(q, response) {
+async function runSearch(q, offset, append) {
+  try {
+    const response = await api(
+      `/api/search?q=${encodeURIComponent(q)}&userId=${state.userId}&offset=${offset}`,
+    );
+    renderResults(q, response, append);
+  } catch (err) {
+    // The search endpoint is rate limited now, so a 429 is an expected outcome, not a failure.
+    if (err.status === 429) notice(`Searching too fast — try again in ${err.retryAfter ?? 10}s.`);
+    else notice(`Search failed: ${err.message}`);
+  }
+}
+
+function renderResults(q, response, append = false) {
   state.viewingSearch = true;
   state.activeConversation = null;
-  clearTyping();
+  renderTyping();
+  renderPresence();
   renderSidebar();
 
   el('title').textContent = `Search: "${q}"`;
   el('loadOlder').style.display = 'none';
   const pane = el('messages');
-  pane.replaceChildren(el('loadOlder'));
+  if (!append) pane.replaceChildren(el('loadOlder'));
+  // Drop any previous "more results" control before appending the next page.
+  pane.querySelectorAll('.more-results').forEach((n) => n.remove());
 
   const results = response.results ?? [];
-  if (!results.length) {
+  if (!results.length && !append) {
     const empty = document.createElement('div');
     empty.className = 'empty';
     empty.textContent = `No messages matching "${q}".`;
@@ -553,10 +701,21 @@ function renderResults(q, response) {
     pane.appendChild(div);
   }
 
-  if (response.hasMore) {
+  if (response.nextOffset !== null && response.nextOffset !== undefined) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'more-results';
+    more.textContent = 'More results';
+    more.onclick = () => {
+      more.disabled = true;
+      void runSearch(q, response.nextOffset, true);
+    };
+    pane.appendChild(more);
+  } else if (response.hasMore) {
+    // Paging is capped, so say so rather than implying the list is complete.
     const more = document.createElement('div');
-    more.className = 'empty';
-    more.textContent = 'More matches not shown — narrow the search.';
+    more.className = 'empty more-results';
+    more.textContent = 'More matches exist — narrow the search to see them.';
     pane.appendChild(more);
   }
 }
@@ -585,7 +744,10 @@ el('userSelect').onchange = async (e) => {
   sessionStorage.setItem('relay.userId', String(state.userId));
   state.activeConversation = null;
   state.rendered.clear();
+  state.lastSeen.clear();
+  state.presence.clear();
   clearTyping();
+  renderPresence();
   el('title').textContent = 'Pick a conversation';
   el('messages').replaceChildren(el('loadOlder'));
   await loadConversations();
