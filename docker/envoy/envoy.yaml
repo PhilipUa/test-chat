@@ -15,6 +15,15 @@ static_resources:
                 stat_prefix: ingress
                 upgrade_configs:
                   - upgrade_type: websocket
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        text_format_source:
+                          # upstream_host tells you which api replica served a request, which is
+                          # what you need when debugging anything scale-related.
+                          inline_string: "[%START_TIME%] %REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %RESPONSE_CODE% %DURATION%ms upstream=%UPSTREAM_HOST%\n"
                 route_config:
                   name: local
                   virtual_hosts:
@@ -25,6 +34,13 @@ static_resources:
                           route:
                             cluster: api
                             timeout: 0s
+                            # Retry idempotent requests that hit a replica mid-restart, rather
+                            # than surfacing a 503 to the browser. Safe because sends are
+                            # idempotent on clientId — a retried POST returns the original
+                            # message instead of writing a second one.
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,unavailable,reset"
+                              num_retries: 2
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
@@ -33,7 +49,12 @@ static_resources:
   clusters:
     - name: api
       connect_timeout: 2s
+      # STRICT_DNS re-resolves the `api` hostname, so `--scale api=3` is picked up without an
+      # Envoy restart. Compose's DNS returns one A record per replica.
       type: STRICT_DNS
+      # Re-resolve often enough that scaling up or down is reflected quickly.
+      dns_refresh_rate: 5s
+      respect_dns_ttl: false
       lb_policy: ROUND_ROBIN
       load_assignment:
         cluster_name: api
@@ -42,3 +63,16 @@ static_resources:
               - endpoint:
                   address:
                     socket_address: { address: api, port_value: 3000 }
+      # Take a replica out of rotation while it's restarting or still migrating, instead of
+      # round-robining requests into a connection refused.
+      health_checks:
+        - timeout: 2s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check:
+            path: /api/health
+      outlier_detection:
+        consecutive_5xx: 5
+        interval: 10s
+        base_ejection_time: 15s

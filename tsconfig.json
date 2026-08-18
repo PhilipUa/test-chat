@@ -1,14 +1,20 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "allowJs": true,
     "checkJs": false,
     "strict": true,
+    // The source imports siblings as './config.ts', which is what tsx runs. Without this, tsc
+    // errors on every single import — which is why `tsc` had clearly never been run here.
+    "allowImportingTsExtensions": true,
+    "noUncheckedIndexedAccess": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    "types": ["node"]
   },
   "include": ["src", "docker/db"]
 }
