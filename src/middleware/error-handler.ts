@@ -40,13 +40,37 @@ export const notFoundHandler: RequestHandler = (req, res) => {
 };
 
 /**
- * Last line of defence, outside the request cycle.
+ * Last line of defence, outside the request cycle — and the two cases are not the same.
  *
- * An unhandled rejection in a WebSocket handler or a timer would otherwise exit the process
- * silently. We log loudly and stay up: behind a load balancer, a degraded instance beats a crash
- * loop.
+ * An **unhandled rejection** is usually a missing `.catch()` on something non-essential: a presence
+ * refresh, a read receipt. The process is still sound, so log it loudly and carry on. Taking an
+ * instance down for a dropped promise turns a small omission into an outage.
+ *
+ * An **uncaught exception** unwound the stack from somewhere we don't know, so half-applied state and
+ * abandoned locks are both possible and the heap is no longer trustworthy. Both handlers used to just
+ * log, which meant continuing to serve requests from a process in an undefined state. It now shuts
+ * down and exits non-zero, which the surrounding infrastructure is built for: `restart: on-failure`
+ * brings the replica back, the healthcheck keeps it out of rotation until it is ready, and Envoy
+ * retries the connection failures in between. That wasn't true when the original comment was written
+ * — "a degraded instance beats a crash loop" was the right call before any of it existed.
+ *
+ * Split from its registration so the policy is testable without attaching listeners to the real
+ * process.
  */
-export function installProcessErrorHandlers(): void {
-  process.on('unhandledRejection', (reason) => console.error('[unhandledRejection]', reason));
-  process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
+export function processErrorHandlers(onFatal: (err: unknown) => void) {
+  return {
+    unhandledRejection: (reason: unknown): void => {
+      console.error('[unhandledRejection]', reason);
+    },
+    uncaughtException: (err: unknown): void => {
+      console.error('[uncaughtException]', err);
+      onFatal(err);
+    },
+  };
+}
+
+export function installProcessErrorHandlers(onFatal: (err: unknown) => void): void {
+  const handlers = processErrorHandlers(onFatal);
+  process.on('unhandledRejection', handlers.unhandledRejection);
+  process.on('uncaughtException', handlers.uncaughtException);
 }

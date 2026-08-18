@@ -104,10 +104,6 @@ for (let c = 0; c < CONVERSATIONS; c++) {
     { ordered: false },
   );
 
-  await runWrite('UPDATE conversations SET last_message_at = ? WHERE id = ?', [
-    docs[docs.length - 1]!.createdAt,
-    conversationId,
-  ]);
   totalMessages += docs.length;
 }
 

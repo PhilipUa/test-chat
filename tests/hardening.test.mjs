@@ -1,6 +1,7 @@
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  conversationsOf,
   freshConversation,
   get,
   post,
@@ -239,8 +240,8 @@ describe('presence', () => {
       assert.equal(online.userName, 'Erin');
 
       // Presence is in the conversation list too, which is what renders the sidebar dot.
-      const list = await get('/api/conversations?userId=4');
-      const participant = list.body
+      const list = await conversationsOf(4);
+      const participant = list
         .find((c) => c.id === conv.id)
         .participants.find((p) => p.id === 5);
       assert.equal(participant.online, true);

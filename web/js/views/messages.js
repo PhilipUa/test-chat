@@ -2,8 +2,9 @@ import { getMessages, postRead } from '../api.js';
 import { conversationById, el, state, userName } from '../state.js';
 import { renderPresence } from '../features/presence.js';
 import { clearTyping, renderTyping } from '../features/typing.js';
+import { notice } from './notice.js';
 import { renderSidebar } from './sidebar.js';
-import { bestEffort } from '../util.js';
+import { bestEffort, maxOf } from '../util.js';
 
 /** The message pane: rendering, pagination, and read receipts. */
 
@@ -69,6 +70,22 @@ export async function openConversation(id) {
   await markRead();
 }
 
+/**
+ * openConversation with its failure surfaced to the user.
+ *
+ * The pane is cleared before the fetch is awaited, so a failure left an empty message area under a
+ * title claiming the conversation was open. Both call sites discarded the promise, so the only trace
+ * was an unhandled rejection in the console — while every other failure path in the app reports
+ * through notice().
+ */
+export async function openConversationOrNotice(id) {
+  try {
+    await openConversation(id);
+  } catch (err) {
+    notice(`Could not open that conversation: ${err.message}`);
+  }
+}
+
 export function buildMessage(m) {
   const div = document.createElement('div');
   div.className = 'msg';
@@ -121,7 +138,7 @@ export async function markRead() {
   const id = state.activeConversation;
   if (!id) return;
   const conv = conversationById(id);
-  const latest = Math.max(0, ...[...state.rendered]);
+  const latest = maxOf(state.rendered);
   if (conv) conv.unreadCount = 0;
   renderSidebar();
   if (!latest) return;

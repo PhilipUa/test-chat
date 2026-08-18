@@ -1,16 +1,15 @@
 import { config } from '../config.ts';
 import { messageBodies, tokenizeBody } from '../db/mongo.ts';
 import { queryOne, runWrite } from '../db/mysql.ts';
-import { bestEffort } from '../util/resilience.ts';
 import { sign } from './message-signing.ts';
 
 /**
  * The dual-store write: MySQL holds a message's id and ordering, Mongo holds its text.
  *
- * This is the delicate part of sending a message, and it used to be interleaved with idempotency,
- * rate-limit bookkeeping and the conversation timestamp touch inside one function. It's isolated
- * here because it's the code whose failure modes need reading carefully, and because it's the seam
- * that changes if the split-store design is ever revisited (docs/04-tradeoffs.md).
+ * This is the delicate part of sending a message, and it used to be interleaved with idempotency and
+ * rate-limit bookkeeping inside one function. It's isolated here because it's the code whose failure
+ * modes need reading carefully, and because it's the seam that changes if the split-store design is
+ * ever revisited (docs/04-tradeoffs.md).
  *
  * There is no transaction across two databases, so the order of operations *is* the correctness
  * story: MySQL first (it issues the id), then Mongo, and on a Mongo failure delete the MySQL row —
@@ -96,19 +95,6 @@ export async function findRowByClientId(
 export async function findBody(id: number): Promise<string> {
   const doc = await messageBodies().findOne({ _id: id }, { projection: { body: 1 } });
   return doc?.body ?? '';
-}
-
-/**
- * Best-effort: keeps the inbox orderable by recency without scanning `messages`. A failure here
- * only affects sort order, so it must never fail a send that already succeeded.
- */
-export async function touchConversation(conversationId: number, at: Date): Promise<void> {
-  // Derived data — the correct value is always recomputable from `messages` — so a failure must not
-  // fail a send that already succeeded. It is logged rather than swallowed: silently stale inbox
-  // ordering is the kind of thing nobody can explain later.
-  await bestEffort('messages:touch-conversation', () =>
-    runWrite('UPDATE conversations SET last_message_at = ? WHERE id = ?', [at, conversationId]),
-  );
 }
 
 export { SELECT_COLUMNS };

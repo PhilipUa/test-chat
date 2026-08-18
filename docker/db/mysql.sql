@@ -14,9 +14,7 @@ CREATE TABLE users (
 CREATE TABLE conversations (
   id INT PRIMARY KEY AUTO_INCREMENT,
   title VARCHAR(200) NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  -- Lets the inbox sort by recent activity without touching `messages`.
-  last_message_at DATETIME(3) NULL
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE conversation_participants (

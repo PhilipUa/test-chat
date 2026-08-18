@@ -1,7 +1,7 @@
 import type { Request, RequestHandler } from 'express';
 import { asyncHandler } from './async-handler.ts';
 import { assertParticipant } from '../services/conversations/membership.ts';
-import { int, optionalInt } from '../validation/parse.ts';
+import { int } from '../validation/parse.ts';
 import type { ActorSource } from './require-actor.ts';
 
 /**
@@ -13,43 +13,27 @@ import type { ActorSource } from './require-actor.ts';
  * which endpoints are guarded, which is the property that makes a missing check noticeable.
  *
  * Both ids land in res.locals, so controllers don't re-parse them.
+ *
+ * The actor is always required. GET /api/messages used to make it optional "for compatibility with
+ * the original endpoint" — but the original never accepted `userId` at all, so the only thing that
+ * bought was an authorization check any caller could skip by leaving the parameter off.
  */
 export interface ParticipantOptions {
   actor: ActorSource;
   conversation: ActorSource;
   actorField?: string;
   conversationField?: string;
-  /**
-   * When true, a missing actor skips the check instead of failing.
-   *
-   * Used by GET /api/messages, whose `userId` is optional for compatibility with the original
-   * endpoint. It's the one soft edge in the authorization story and it goes away with real auth.
-   */
-  optionalActor?: boolean;
 }
 
 export function requireParticipant(options: ParticipantOptions): RequestHandler {
-  const {
-    actor,
-    conversation,
-    actorField = 'userId',
-    conversationField = 'conversationId',
-    optionalActor = false,
-  } = options;
+  const { actor, conversation, actorField = 'userId', conversationField = 'conversationId' } =
+    options;
 
   return asyncHandler(async (req: Request, res, next) => {
     const conversationId = int(conversation(req), conversationField);
     res.locals.conversationId = conversationId;
 
-    const actorId = optionalActor
-      ? optionalInt(actor(req), actorField)
-      : int(actor(req), actorField);
-
-    if (actorId === undefined) {
-      next();
-      return;
-    }
-
+    const actorId = int(actor(req), actorField);
     res.locals.actorId = actorId;
     await assertParticipant(actorId, conversationId);
     next();

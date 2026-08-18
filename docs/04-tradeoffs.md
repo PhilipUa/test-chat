@@ -17,16 +17,24 @@ rewritten every endpoint and obscured the actual fixes. The shape I've built ass
 authenticated `req.user.id` would replace the `userId`/`senderId` parameters at exactly the
 `positiveInt(...)` call sites, and every `assertParticipant` check stays as-is.
 
-One consequence: `GET /api/messages` takes `userId` as *optional*, and only enforces membership
+~~One consequence: `GET /api/messages` takes `userId` as *optional*, and only enforces membership
 when supplied, so the original endpoint contract still works. That's a knowingly soft edge — with
-real auth it becomes mandatory. It's the one place I chose compatibility over strictness, and I'd
-reverse it the moment identity is trustworthy.
+real auth it becomes mandatory.~~
+
+**Reversed** — see `docs/08-review-fixes.md`. That paragraph was wrong, and reading it back is
+instructive: it describes an authorization check any caller could skip by leaving a parameter off,
+and calls it a compatibility trade-off. There was nothing to be compatible with — the original
+endpoint never accepted `userId` at all. `userId` is now required.
 
 ### The two-store write has a small hole left in it
 
 `createMessage` writes MySQL then Mongo, and deletes the MySQL row if Mongo fails. But if the
 process is killed *between* the two writes, the compensating delete never runs and a bodyless row
 survives — which renders as an empty message forever.
+
+The *concurrent* case — a second send with the same `clientId` reading the row before its body is
+written — turned out to be reachable and is fixed; see finding 4 in `docs/08-review-fixes.md`. This
+one, a crash inside the window, still wants an outbox.
 
 The window went from "any Mongo failure, permanently" to "a process death inside a few
 milliseconds", which is a big improvement but not a guarantee. Doing it properly means either:
@@ -78,9 +86,9 @@ still gets a correct response, but you could argue it either way.
   enforced in the service layer instead. FKs would be better, but adding them to a table with
   existing unreferenced rows is a data-cleanup migration, and the app-level checks close the actual
   hole. I'd add them with a proper backfill.
-- **`conversations.last_message_at` is best-effort.** Updated after a successful send, and a
-  failure there is swallowed — it only affects inbox sort order, so it must never fail a send that
-  already succeeded. It's derived data; the correct value is always recomputable from `messages`.
+- ~~**`conversations.last_message_at` is best-effort.**~~ **Removed** — see finding 11 in
+  `docs/08-review-fixes.md`. Every send maintained it and nothing ever read it: the inbox orders by
+  the join on `messages`. This entry described the failure policy of a write with no reader.
 - **User names cached in-process for 60s.** They're on the per-keystroke typing path. Names
   effectively never change, so a TTL beats an invalidation protocol. A rename takes up to a minute
   to show.

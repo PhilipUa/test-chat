@@ -19,18 +19,41 @@ export interface Client {
   subs: Set<number>;
   /** Cleared on pong; a socket that misses two heartbeats is terminated. */
   missedPings: number;
+  /**
+   * Set once this socket is gone.
+   *
+   * Frame handling is async, so a frame can still be mid-flight when the close event fires — the
+   * handler resumes after its await and would otherwise go on mutating shared state on behalf of a
+   * connection that no longer exists. Anything that acquires a resource must check this after every
+   * await; see ws/protocol.ts.
+   */
+  closed: boolean;
 }
 
 const clients = new Set<Client>();
 let heartbeat: NodeJS.Timeout | undefined;
 
 export function add(ws: WebSocket): Client {
-  const client: Client = { id: crypto.randomUUID(), ws, subs: new Set(), missedPings: 0 };
+  const client: Client = {
+    id: crypto.randomUUID(),
+    ws,
+    subs: new Set(),
+    missedPings: 0,
+    closed: false,
+  };
   clients.add(client);
   return client;
 }
 
-export function remove(client: Client): void {
+/**
+ * Drops a client from the set and marks it closed, so an in-flight frame handler can tell.
+ *
+ * Deliberately does not touch Redis channels or presence: this module owns the socket set and
+ * nothing else. Releasing what the client held is ws/protocol.ts's `releaseClient`, which is the one
+ * function that owns the whole teardown.
+ */
+export function markClosed(client: Client): void {
+  client.closed = true;
   clients.delete(client);
 }
 
@@ -89,6 +112,9 @@ export function stopHeartbeat(): void {
 }
 
 export function closeAll(reason: string): void {
-  for (const client of clients) client.ws.close(1001, reason);
+  for (const client of clients) {
+    client.closed = true;
+    client.ws.close(1001, reason);
+  }
   clients.clear();
 }

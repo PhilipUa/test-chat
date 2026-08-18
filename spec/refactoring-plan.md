@@ -139,7 +139,8 @@ handler base class.
 ### 2.2 `createMessage` — six responsibilities in one function
 
 Idempotency lookup, timestamp, MySQL insert, duplicate-race recovery, signing, Mongo write,
-compensating delete, and the `last_message_at` touch. The dual-store write is the delicate part and
+compensating delete, and the `last_message_at` touch (since removed — see `docs/08-review-fixes.md`).
+The dual-store write is the delicate part and
 it's interleaved with everything else.
 
 - `services/message-signing.ts` — the HMAC and `verifySignature`.

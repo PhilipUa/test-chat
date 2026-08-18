@@ -48,7 +48,8 @@ shows which replicas Envoy has discovered, and `/api/health` reports which one s
 
 ### Tests
 
-84 tests — 59 API-level, 13 in a real browser, 12 unit tests for the error-handling helpers:
+115 tests — 73 API-level, 15 in a real browser, 27 unit tests (the error-handling helpers, the
+WebSocket connection lifecycle, the process error policy, and the browser helpers):
 
 ```
 npm install
@@ -64,6 +65,8 @@ Scripts for the specific problems in the original build:
 
 ```
 node scripts/probe-realtime.mjs               # does a message reach every connected client?
+docker compose exec api \
+  node scripts/probe-ws-lifecycle.mjs         # does a socket that dies mid-subscribe leak channels?
 node scripts/bench-send.mjs 50                # what does a send burst do to read latency?
 node scripts/audit-tasks.mjs                  # every tasks/ requirement, with evidence
 docker compose exec api npx tsx scripts/generate-demo-data.ts 30 60
@@ -107,6 +110,7 @@ Thanks — this was a good one to dig into. Everything below is in the repo as y
 | [`spec/refactoring-plan.md`](spec/refactoring-plan.md) | the SOLID/KISS/DRY plan — including what I deliberately would not do |
 | [`docs/06-refactoring.md`](docs/06-refactoring.md) | executing it, the outcome against the plan's own targets, and what it found |
 | [`docs/07-structure.md`](docs/07-structure.md) | Express layering — controllers and middleware, and the plan decision I reversed |
+| [`docs/08-review-fixes.md`](docs/08-review-fixes.md) | a code review of the whole branch, the 12 findings, and the one mistake three of them share |
 
 ## The short version
 

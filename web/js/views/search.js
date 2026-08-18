@@ -3,7 +3,7 @@ import { el, state, userName } from '../state.js';
 import { renderPresence } from '../features/presence.js';
 import { renderTyping } from '../features/typing.js';
 import { notice } from './notice.js';
-import { openConversation } from './messages.js';
+import { openConversationOrNotice } from './messages.js';
 import { renderSidebar } from './sidebar.js';
 
 /** Search — tasks/search.md. Results render with textContent, so a snippet is plain text by design. */
@@ -84,6 +84,6 @@ function result(r) {
   body.textContent = r.body ?? '';
 
   div.append(where, body);
-  div.onclick = () => openConversation(r.conversationId);
+  div.onclick = () => void openConversationOrNotice(r.conversationId);
   return div;
 }

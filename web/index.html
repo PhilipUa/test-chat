@@ -53,6 +53,10 @@
     #text { flex: 1; padding: 8px; font: inherit; }
     #composer button { padding: 8px 16px; font: inherit; cursor: pointer; }
     .empty { color: var(--muted); padding: 8px 0; }
+    /* The inbox is paged, so the list needs a way to ask for the next page. */
+    li.load-more { border: 0; padding: 6px 0; }
+    li.load-more button { width: 100%; padding: 6px; font: inherit; cursor: pointer; }
+    li.load-more button:disabled { cursor: default; opacity: 0.6; }
   </style>
 </head>
 <body>

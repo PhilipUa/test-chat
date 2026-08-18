@@ -108,18 +108,14 @@ const migrations: Migration[] = [
     },
   },
   {
-    // Lets us order the inbox by recency without touching the messages table.
-    name: 'conversations: last_message_at',
+    // This column was added to "order the inbox by recency without touching the messages table", and
+    // then nothing ever read it: listConversations orders by the join on `messages`, which is always
+    // correct, while every send paid an extra UPDATE and a row lock on the conversation to maintain a
+    // value with no reader. Derived data, so dropping it loses nothing.
+    name: 'conversations: drop unused last_message_at',
     run: async () => {
-      if (await columnExists('conversations', 'last_message_at')) return;
-      await pool.query(
-        'ALTER TABLE conversations ADD COLUMN last_message_at DATETIME(3) NULL',
-      );
-      // Backfill from whatever is already there.
-      await pool.query(
-        `UPDATE conversations c
-         SET last_message_at = (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id)`,
-      );
+      if (!(await columnExists('conversations', 'last_message_at'))) return;
+      await pool.query('ALTER TABLE conversations DROP COLUMN last_message_at');
     },
   },
 ];

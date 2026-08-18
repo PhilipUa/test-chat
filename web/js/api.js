@@ -17,7 +17,12 @@ export async function api(path, options) {
 
 export const getUsers = () => api('/api/users');
 
-export const getConversations = (userId) => api(`/api/conversations?userId=${userId}`);
+/** The inbox is paged; `cursor` comes from the previous page's `nextCursor`. */
+export const getConversations = (userId, { cursor } = {}) => {
+  const query = new URLSearchParams({ userId });
+  if (cursor) query.set('cursor', cursor);
+  return api(`/api/conversations?${query}`);
+};
 
 export const getMessages = (conversationId, userId, params = {}) => {
   const query = new URLSearchParams({ conversationId, userId, ...params });

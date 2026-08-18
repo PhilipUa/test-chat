@@ -33,6 +33,40 @@ export async function publish(
 }
 
 /**
+ * Publishes one event per conversation in a single Redis pipeline.
+ *
+ * Presence announces to every conversation a user is in, and doing that as one awaited round trip
+ * each cost ~95ms for a user in 878 conversations — with the presence snapshot queued behind it, so
+ * the socket wasn't usable until it finished. One pipeline is one round trip.
+ */
+export async function publishEach(
+  events: Array<{ conversationId: number; event: ConversationEvent }>,
+  originConnectionId?: string,
+): Promise<void> {
+  if (!events.length) return;
+
+  const envelopes = events.map(({ conversationId, event }) => ({
+    conversationId,
+    envelope: { event, origin: config.instanceId, originConnectionId } satisfies FanoutEnvelope,
+  }));
+
+  const published = await bestEffort('ws:publish-each', async () => {
+    const pipeline = redis.pipeline();
+    for (const { conversationId, envelope } of envelopes) {
+      pipeline.publish(channelFor(conversationId), JSON.stringify(envelope));
+    }
+    const results = await pipeline.exec();
+    // A pipeline resolves even when individual commands failed, so check them: a partial failure has
+    // to degrade to local delivery rather than silently dropping events.
+    if (!results || results.some(([err]) => err)) throw new Error('one or more publishes failed');
+  });
+
+  if (!published) {
+    for (const { conversationId, envelope } of envelopes) deliverLocally(conversationId, envelope);
+  }
+}
+
+/**
  * Delivers an envelope to this instance's matching sockets. Called from the Redis subscriber, so it
  * handles both locally-published and remote events identically.
  */

@@ -5,7 +5,7 @@ import { redisSubscriber } from '../db/redis.ts';
 import * as channels from './channels.ts';
 import { conversationIdFromChannel, type FanoutEnvelope } from './events.ts';
 import { deliverLocally } from './fanout.ts';
-import { deregisterAll, handleDisconnect, handleFrame } from './protocol.ts';
+import { deregisterAll, handleDisconnect, handleFrame, releaseClient } from './protocol.ts';
 import * as registry from './registry.ts';
 import { parseJson } from '../util/resilience.ts';
 
@@ -60,10 +60,10 @@ export function attachWs(server: Server): void {
     });
 
     ws.on('close', () => {
-      registry.remove(client);
-      const subs = [...client.subs];
-      for (const id of subs) channels.release(id);
-      client.subs.clear();
+      // One call owns the whole teardown — marking the client closed, releasing its channels, and
+      // reporting what it held. An in-flight frame handler checks that closed flag after every await,
+      // so it can no longer acquire anything on behalf of this socket.
+      const subs = releaseClient(client);
       void handleDisconnect(client, subs);
     });
   });
@@ -96,6 +96,15 @@ function watchSubscriberHealth(): void {
     if (subscriberConnected) return;
     subscriberConnected = true;
     console.warn('[ws] redis subscriber reconnected; asking clients to resync');
+
+    // ioredis re-issues SUBSCRIBE only for channels it had acknowledged. Any channel acquired *during*
+    // the outage was never subscribed and nothing else would ever retry it — the client re-sends
+    // `subscribe`, reconcile sees no difference, and that conversation stays silent for the life of the
+    // process. Retry them here, where we already know realtime just came back.
+    void channels.resubscribeUnconfirmed().then((retried) => {
+      if (retried) console.warn(`[ws] resubscribed ${retried} channel(s) that had not landed`);
+    });
+
     for (const client of registry.all()) {
       registry.send(client, { type: 'resync', reason: 'realtime-reconnected' });
     }

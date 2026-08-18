@@ -16,6 +16,10 @@ declare global {
       actorId?: number;
       /** The conversation the request targets, already checked for membership. */
       conversationId?: number;
+      /** A validated send, parsed before the rate limiter ran. See middleware/payload.ts. */
+      newMessage?: { body: string; clientId: string | null };
+      /** A validated conversation create, parsed before the rate limiter ran. */
+      newConversation?: { title: string; participantIds: number[] };
     }
   }
 }
@@ -34,4 +38,20 @@ export function conversationId(res: Response): number {
     throw new Error('conversationId is not set — this route is missing requireParticipant');
   }
   return id;
+}
+
+export function newMessage(res: Response): { body: string; clientId: string | null } {
+  const payload = res.locals.newMessage;
+  if (payload === undefined) {
+    throw new Error('newMessage is not set — this route is missing parseMessagePayload');
+  }
+  return payload;
+}
+
+export function newConversation(res: Response): { title: string; participantIds: number[] } {
+  const payload = res.locals.newConversation;
+  if (payload === undefined) {
+    throw new Error('newConversation is not set — this route is missing parseConversationPayload');
+  }
+  return payload;
 }

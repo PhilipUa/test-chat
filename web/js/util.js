@@ -43,3 +43,16 @@ export function parseJson(raw) {
     return undefined;
   }
 }
+
+/**
+ * The largest value in a set, or 0 when it's empty.
+ *
+ * `Math.max(0, ...set)` spreads the set as function arguments, which is a RangeError past roughly
+ * 65k of them — so scrolling far enough back through a long conversation broke every read receipt
+ * from that point on.
+ */
+export function maxOf(values) {
+  let max = 0;
+  for (const value of values) if (value > max) max = value;
+  return max;
+}

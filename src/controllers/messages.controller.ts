@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import { config } from '../config.ts';
-import { actorId, conversationId } from '../middleware/locals.ts';
-import { int, intOr, nonEmptyString, optionalClientId, optionalInt } from '../validation/parse.ts';
+import { actorId, conversationId, newMessage } from '../middleware/locals.ts';
+import { int, intOr, optionalInt } from '../validation/parse.ts';
 import { createMessage, listMessages } from '../services/messages.ts';
 import { publish } from '../ws/hub.ts';
 
@@ -14,13 +14,11 @@ import { publish } from '../ws/hub.ts';
  */
 
 export async function send(req: Request, res: Response): Promise<void> {
-  // conversationId and the sender were validated and authorized by requireParticipant.
+  // Everything here was validated and authorized by the middleware chain: requireParticipant checked
+  // the sender and conversation, parseMessagePayload checked the body.
   const senderId = actorId(res);
   const conversation = conversationId(res);
-
-  const payload = req.body ?? {};
-  const body = nonEmptyString(payload.body, 'body', config.messages.maxBodyLength);
-  const clientId = optionalClientId(payload.clientId);
+  const { body, clientId } = newMessage(res);
 
   const { message, deduplicated } = await createMessage({
     conversationId: conversation,

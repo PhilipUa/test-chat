@@ -16,6 +16,12 @@ export function setOnSelect(fn) {
   onSelect = fn;
 }
 
+/** Set by the app, for the same reason: the sidebar shouldn't know how a page is fetched. */
+let onLoadMore = async () => {};
+export function setOnLoadMore(fn) {
+  onLoadMore = fn;
+}
+
 export function renderSidebar() {
   const list = el('conversations');
   list.replaceChildren();
@@ -29,6 +35,34 @@ export function renderSidebar() {
   }
 
   for (const c of state.conversations) list.appendChild(row(c));
+  if (state.hasMoreConversations) list.appendChild(loadMoreRow());
+}
+
+/**
+ * The inbox is paged, so say so rather than letting a truncated list read as the whole thing.
+ */
+function loadMoreRow() {
+  const li = document.createElement('li');
+  li.className = 'load-more';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.id = 'loadMoreConversations';
+  button.textContent = 'Load more conversations';
+  button.onclick = async () => {
+    button.disabled = true;
+    button.textContent = 'Loading…';
+    try {
+      await onLoadMore();
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = 'Load more conversations';
+      throw err;
+    }
+  };
+
+  li.appendChild(button);
+  return li;
 }
 
 function row(c) {

@@ -2,9 +2,9 @@ import { createConversation, getConversations, getUsers, postMessage } from './a
 import { el, setUserId, state } from './state.js';
 import { connectWs, setReloadConversations, subscribe } from './socket.js';
 import { cancelPendingStop, sendTyping, watchComposer } from './features/typing.js';
-import { appendMessage, buildMessage, openConversation, resetPane, scrollToBottom, watchLoadOlder } from './views/messages.js';
+import { appendMessage, buildMessage, openConversationOrNotice, resetPane, scrollToBottom, watchLoadOlder } from './views/messages.js';
 import { notice } from './views/notice.js';
-import { renderSidebar, setOnSelect } from './views/sidebar.js';
+import { renderSidebar, setOnLoadMore, setOnSelect } from './views/sidebar.js';
 import { watchSearchForm } from './views/search.js';
 
 /**
@@ -33,10 +33,37 @@ async function loadUsers() {
   );
 }
 
+/**
+ * Loads the first page of the inbox.
+ *
+ * This runs on boot, on a user switch, and on every catch-up, so it resets to page one rather than
+ * accumulating: the alternative is a list that only ever grows and re-fetches everything already
+ * loaded each time realtime blips.
+ */
 async function loadConversations() {
-  state.conversations = await getConversations(state.userId);
+  const page = await getConversations(state.userId);
+  state.conversations = page.conversations;
+  state.conversationsCursor = page.nextCursor;
+  state.hasMoreConversations = page.hasMore;
   renderSidebar();
   connectWs();
+}
+
+/**
+ * Appends the next page of the inbox.
+ *
+ * Subscribing to what's loaded rather than to everything is deliberate: one socket used to ask for all
+ * 878 of a user's conversations, which is 878 Redis SUBSCRIBEs and a presence announce to match.
+ */
+async function loadMoreConversations() {
+  if (!state.conversationsCursor) return;
+  const page = await getConversations(state.userId, { cursor: state.conversationsCursor });
+  state.conversations = [...state.conversations, ...page.conversations];
+  state.conversationsCursor = page.nextCursor;
+  state.hasMoreConversations = page.hasMore;
+  renderSidebar();
+  // Take in the newly visible conversations' events too.
+  subscribe();
 }
 
 /* ------------------------------------------------------------------ send */
@@ -99,7 +126,7 @@ el('newConv').onclick = async () => {
   try {
     const created = await createConversation(title.trim(), [state.userId, ...others]);
     await loadConversations();
-    await openConversation(created.id);
+    await openConversationOrNotice(created.id);
   } catch (err) {
     notice(`Could not create conversation: ${err.message}`);
   }
@@ -114,7 +141,8 @@ el('userSelect').onchange = async (e) => {
 
 /* ------------------------------------------------------------------ boot */
 
-setOnSelect((id) => void openConversation(id));
+setOnSelect((id) => void openConversationOrNotice(id));
+setOnLoadMore(() => loadMoreConversations());
 setReloadConversations(loadConversations);
 watchComposer();
 watchLoadOlder();

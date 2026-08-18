@@ -1,20 +1,35 @@
 import type { Request, Response } from 'express';
-import { actorId, conversationId } from '../middleware/locals.ts';
-import { int, intArray, nonEmptyString } from '../validation/parse.ts';
+import { HttpError } from '../errors.ts';
+import { actorId, conversationId, newConversation } from '../middleware/locals.ts';
+import { config } from '../config.ts';
+import { int, intOr } from '../validation/parse.ts';
 import { createConversation, markRead } from '../services/conversations/commands.ts';
-import { listConversations } from '../services/conversations/queries.ts';
+import { decodeCursor, listConversations } from '../services/conversations/queries.ts';
 import { publish } from '../ws/hub.ts';
 
 /** Conversation endpoints. */
 
+/** GET /api/conversations?userId=…[&limit=][&cursor=] */
 export async function list(req: Request, res: Response): Promise<void> {
-  res.json(await listConversations(actorId(res)));
+  const limit = intOr(req.query.limit, 'limit', config.conversations.defaultPageSize, {
+    max: config.conversations.maxPageSize,
+  });
+
+  // Rejected rather than ignored: silently returning page one for a cursor we can't read looks to the
+  // client like the end of the list, which is how a paging loop quietly drops conversations.
+  const raw = req.query.cursor;
+  let cursor;
+  if (raw !== undefined && raw !== '') {
+    cursor = decodeCursor(String(raw));
+    if (!cursor) throw HttpError.badRequest('cursor is not a valid pagination cursor');
+  }
+
+  res.json(await listConversations(actorId(res), { limit, cursor }));
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const body = req.body ?? {};
-  const title = nonEmptyString(body.title, 'title', 200);
-  const participantIds = intArray(body.participantIds, 'participantIds');
+  // Parsed by parseConversationPayload, before the rate limiter charged for it.
+  const { title, participantIds } = newConversation(res);
   res.status(201).json(await createConversation(title, participantIds));
 }
 

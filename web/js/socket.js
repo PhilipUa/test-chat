@@ -150,9 +150,21 @@ export async function catchUp() {
   const id = state.activeConversation;
   if (!id || state.viewingSearch) return;
 
+  /**
+   * Whether the conversation we started catching up on is still the one on screen.
+   *
+   * This awaits a fetch that can walk up to twenty pages, and appendMessage writes into whatever pane
+   * is open rather than a particular conversation's. openConversation was given a generation guard for
+   * exactly this race; catchUp had none, so a reconnect while the user was navigating dropped the old
+   * conversation's history into the new one's pane.
+   */
+  const stillOpen = () => state.activeConversation === id && !state.viewingSearch;
+
   const since = state.lastSeen.get(id);
   if (since === undefined) {
-    await bestEffort('catch-up:open', () => openConversation(id));
+    // Guarded too: openConversation sets activeConversation, so calling it after the user moved on
+    // would drag them back to the conversation they just left.
+    if (stillOpen()) await bestEffort('catch-up:open', () => openConversation(id));
     return;
   }
 
@@ -161,6 +173,7 @@ export async function catchUp() {
     // `hasMore` means the gap was bigger than one page; keep walking forwards.
     for (let guard = 0; guard < 20; guard++) {
       const page = await getMessages(id, state.userId, { since: cursor });
+      if (!stillOpen()) return;
       for (const m of page.messages) appendMessage(m);
       if (page.latestId) cursor = page.latestId;
       if (!page.hasMore) break;
@@ -170,5 +183,5 @@ export async function catchUp() {
 
   // Reloading the whole conversation is always correct, just heavier — the fallback for when the
   // cheap incremental path didn't work.
-  if (!walked) await bestEffort('catch-up:reload', () => openConversation(id));
+  if (!walked && stillOpen()) await bestEffort('catch-up:reload', () => openConversation(id));
 }

@@ -31,6 +31,16 @@ export const config = {
     maxBodyLength: num('MESSAGE_MAX_LENGTH', 4000),
   },
 
+  conversations: {
+    /**
+     * Default and maximum page size for the inbox. Bounded because the client refetches this list on
+     * every reconnect and every resync, so an unbounded version turns one realtime blip into a scan
+     * of everything the user is in.
+     */
+    defaultPageSize: num('CONVERSATIONS_PAGE_SIZE', 50),
+    maxPageSize: num('CONVERSATIONS_MAX_PAGE_SIZE', 200),
+  },
+
   /** tasks/rate-limiting.md: ~5 messages per 10s per user per conversation. */
   rateLimit: {
     limit: num('RATE_LIMIT_MAX', 5),

@@ -30,16 +30,32 @@ static_resources:
                     - name: app
                       domains: ["*"]
                       routes:
+                        # Reads first, so they can be retried more aggressively than writes.
+                        # `unavailable` and `reset` can both happen *after* the upstream has already
+                        # processed a request, so they are only safe on a method that changes
+                        # nothing. This also covers the WebSocket upgrade, which is a GET.
+                        - match:
+                            prefix: "/"
+                            headers:
+                              - name: ":method"
+                                string_match: { exact: "GET" }
+                          route:
+                            cluster: api
+                            timeout: 0s
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,unavailable,reset"
+                              num_retries: 2
                         - match: { prefix: "/" }
                           route:
                             cluster: api
                             timeout: 0s
-                            # Retry idempotent requests that hit a replica mid-restart, rather
-                            # than surfacing a 503 to the browser. Safe because sends are
-                            # idempotent on clientId — a retried POST returns the original
-                            # message instead of writing a second one.
+                            # Writes only retry where the request provably never reached an upstream.
+                            # The previous policy included `unavailable` and `reset` and justified it
+                            # with "sends are idempotent on clientId" — but clientId is optional, and
+                            # POST /api/conversations and /:id/read are not deduplicated at all, so a
+                            # reset mid-create could produce two conversations.
                             retry_policy:
-                              retry_on: "connect-failure,refused-stream,unavailable,reset"
+                              retry_on: "connect-failure,refused-stream"
                               num_retries: 2
                 http_filters:
                   - name: envoy.filters.http.router

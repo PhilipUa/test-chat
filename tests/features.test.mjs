@@ -1,6 +1,15 @@
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { freshConversation, get, post, sleep, unique, waitForApi, wsClient } from './helpers.mjs';
+import {
+  conversationsOf,
+  freshConversation,
+  get,
+  post,
+  sleep,
+  unique,
+  waitForApi,
+  wsClient,
+} from './helpers.mjs';
 
 /** Tests for the four things in tasks/. */
 
@@ -288,8 +297,7 @@ describe('unread state (survives a reload, unlike the old client-side dot)', () 
       conversationId: conv.id, senderId: 2, body: 'unread two', clientId: unique('u'),
     });
 
-    let list = await get('/api/conversations?userId=1');
-    let mine = list.body.find((c) => c.id === conv.id);
+    let mine = (await conversationsOf(1)).find((c) => c.id === conv.id);
     assert.equal(mine.unreadCount, 2);
 
     const page = await get(`/api/messages?conversationId=${conv.id}&userId=1`);
@@ -297,8 +305,7 @@ describe('unread state (survives a reload, unlike the old client-side dot)', () 
     const read = await post(`/api/conversations/${conv.id}/read`, { userId: 1, messageId: latest });
     assert.equal(read.status, 200);
 
-    list = await get('/api/conversations?userId=1');
-    mine = list.body.find((c) => c.id === conv.id);
+    mine = (await conversationsOf(1)).find((c) => c.id === conv.id);
     assert.equal(mine.unreadCount, 0, 'unread should be zero after marking read');
     assert.equal(mine.lastReadMessageId, latest);
   });
@@ -308,8 +315,8 @@ describe('unread state (survives a reload, unlike the old client-side dot)', () 
     await post('/api/messages', {
       conversationId: conv.id, senderId: 1, body: 'mine', clientId: unique('u'),
     });
-    const list = await get('/api/conversations?userId=1');
-    assert.equal(list.body.find((c) => c.id === conv.id).unreadCount, 0);
+    const list = await conversationsOf(1);
+    assert.equal(list.find((c) => c.id === conv.id).unreadCount, 0);
   });
 
   it('the read watermark only moves forward', async () => {
@@ -347,14 +354,14 @@ describe('conversation list', () => {
       conversationId: newer.id, senderId: 2, body: 'newest activity', clientId: unique('n'),
     });
 
-    const list = await get('/api/conversations?userId=1');
-    const ids = list.body.map((c) => c.id);
+    const list = await conversationsOf(1);
+    const ids = list.map((c) => c.id);
     assert.ok(
       ids.indexOf(newer.id) < ids.indexOf(older.id),
       'the conversation with the most recent message should sort first',
     );
 
-    const top = list.body.find((c) => c.id === newer.id);
+    const top = list.find((c) => c.id === newer.id);
     assert.equal(top.lastMessage.body, 'newest activity');
     assert.equal(top.messageCount, 1);
   });

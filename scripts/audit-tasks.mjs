@@ -58,12 +58,12 @@ console.log('\n═══ tasks/multi-instance.md ═══');
 
   // "the unread dot" works across instances
   const list = await jget('/api/conversations?userId=2');
-  const unread = list.body.find(x => x.id === c.id)?.unreadCount;
+  const unread = list.body.conversations.find(x => x.id === c.id)?.unreadCount;
   check('multi-instance', '"the unread dot" survives and is server-side', unread === 1, `unreadCount=${unread} read back from a different replica than the sender used`);
 
   const latest = (await jget(`/api/messages?conversationId=${c.id}&userId=2`)).body.messages.at(-1).id;
   await jpost(`/api/conversations/${c.id}/read`, { userId: 2, messageId: latest });
-  const after = (await jget('/api/conversations?userId=2')).body.find(x => x.id === c.id)?.unreadCount;
+  const after = (await jget('/api/conversations?userId=2')).body.conversations.find(x => x.id === c.id)?.unreadCount;
   check('multi-instance', 'unread clears on read, and is not per-process state', after === 0, `unreadCount after read = ${after}`);
   await Promise.all(clients.map(cl => cl.close()));
 }

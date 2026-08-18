@@ -7,7 +7,7 @@ import { onlineAmong, connectionClosed, connectionOpened } from '../services/pre
 import { consumeTypingQuota } from '../services/rate-limit.ts';
 import { getUserName } from '../services/users.ts';
 import * as channels from './channels.ts';
-import { publish } from './fanout.ts';
+import { publish, publishEach } from './fanout.ts';
 import * as registry from './registry.ts';
 import type { Client } from './registry.ts';
 import { parseJson } from '../util/resilience.ts';
@@ -39,10 +39,48 @@ export async function handleFrame(client: Client, raw: string): Promise<void> {
   }
 }
 
+/** Release target for a client that is going away. */
+const EMPTY_SUBS: ReadonlySet<number> = new Set();
+
+/**
+ * Points a live client's subscriptions at exactly `allowed`, acquiring and releasing the difference.
+ *
+ * Returns false when the socket closed while its subscribe was still in flight, which is the whole
+ * reason this is a named function: everything after the participant query has to be able to bail.
+ * Acquiring a channel for a client that is already out of the registry leaks it permanently — nobody
+ * is left to release it — and one replica was found holding 741 subscriptions for zero connections.
+ */
+export function applySubscriptions(client: Client, allowed: number[]): boolean {
+  if (client.closed) return false;
+  const next = new Set(allowed);
+  channels.reconcile(client.subs, next);
+  client.subs = next;
+  return true;
+}
+
+/**
+ * The whole teardown for one socket, in one place: mark it gone, release every channel it held, and
+ * report which conversations it was in so the caller can announce the departure.
+ *
+ * One function rather than three steps at the call site, because the bug this fixes was precisely a
+ * teardown that ran in the wrong order relative to an in-flight frame.
+ */
+export function releaseClient(client: Client): number[] {
+  registry.markClosed(client);
+  const held = [...client.subs];
+  channels.reconcile(client.subs, EMPTY_SUBS);
+  client.subs = new Set();
+  return held;
+}
+
 /**
  * The original handler took whatever conversation ids the client named, so anyone could subscribe to
  * every conversation in the system and tail other people's messages. The request is intersected with
  * the conversations the user is actually a participant in.
+ *
+ * Every step after the first await re-checks that the socket is still alive. Frame handling is async
+ * and the close event does not wait for it, so without those checks this function goes on acquiring
+ * channels and registering presence for a connection that has already gone.
  */
 async function handleSubscribe(client: Client, frame: Record<string, unknown>): Promise<void> {
   const userId = Number(frame.userId);
@@ -55,20 +93,36 @@ async function handleSubscribe(client: Client, frame: Record<string, unknown>): 
     ? frame.conversationIds.map(Number).filter((n: number) => Number.isInteger(n) && n > 0)
     : [];
 
+  const previousUserId = client.userId;
   client.userId = userId;
 
   const allowed = await participantConversationIds(userId, requested);
-  const next = new Set(allowed);
-  channels.reconcile(client.subs, next);
-  client.subs = next;
+  if (client.closed) return;
 
-  registry.send(client, { type: 'subscribed', conversationIds: [...next] });
+  // The UI re-subscribes on the same socket when you switch demo user. Without deregistering the
+  // previous identity its presence connection lingers for the whole TTL with no offline event, so
+  // the user you just stopped being shows as online to everyone for 90 seconds. Announced while the
+  // old subscriptions are still in place, so it reaches the conversations that user was in.
+  if (previousUserId !== undefined && previousUserId !== userId) {
+    const wentOffline = await connectionClosed(previousUserId, client.id);
+    if (wentOffline) await announcePresence(previousUserId, [...client.subs], false);
+  }
+
+  if (!applySubscriptions(client, allowed)) return;
+
+  registry.send(client, { type: 'subscribed', conversationIds: [...client.subs] });
 
   // Register this connection, and announce only if it's what brought the user online. The registry
   // reports that, so it is never inferred from this instance's own socket list — which is what got
   // the transition wrong in the first version.
   const cameOnline = await connectionOpened(userId, client.id);
-  if (cameOnline) await announcePresence(userId, [...next], true);
+  if (client.closed) {
+    // The socket went away while we were registering it. Undo the registration rather than leaving a
+    // phantom connection online until the TTL expires.
+    await connectionClosed(userId, client.id);
+    return;
+  }
+  if (cameOnline) await announcePresence(userId, [...client.subs], true);
 
   await sendPresenceSnapshot(client);
 }
@@ -128,15 +182,26 @@ async function sendPresenceSnapshot(client: Client): Promise<void> {
   registry.send(client, { type: 'presence-snapshot', conversations });
 }
 
+/**
+ * Tells a user's conversations that they came online or went away.
+ *
+ * One pipelined publish rather than a round trip per conversation: this runs on every connect and
+ * every disconnect, and a user in 878 conversations was spending ~95ms of serial Redis round trips
+ * here before their presence snapshot could even be sent.
+ */
 async function announcePresence(
   userId: number,
   conversationIds: number[],
   online: boolean,
 ): Promise<void> {
+  if (!conversationIds.length) return;
   const userName = await getUserName(userId);
-  for (const conversationId of conversationIds) {
-    await publish(conversationId, { type: 'presence', conversationId, userId, userName, online });
-  }
+  await publishEach(
+    conversationIds.map((conversationId) => ({
+      conversationId,
+      event: { type: 'presence', conversationId, userId, userName, online },
+    })),
+  );
 }
 
 /**

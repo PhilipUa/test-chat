@@ -14,9 +14,12 @@ import { attachWs, closeWs } from './ws/hub.ts';
  * Everything here is about the process rather than the HTTP surface, which lives in app.ts.
  */
 export async function start(): Promise<http.Server> {
-  installProcessErrorHandlers();
-
   const server = http.createServer(createApp());
+
+  // An uncaught exception leaves the heap untrustworthy, so shut down and let the supervisor restart
+  // us rather than serving from a process in an undefined state. See middleware/error-handler.ts.
+  installProcessErrorHandlers(() => void shutdown(server, 'uncaughtException', 1));
+
   attachWs(server);
 
   // Connect and migrate *before* listening, so an instance never accepts traffic it can't serve.
@@ -46,33 +49,42 @@ export async function start(): Promise<http.Server> {
  * to reconnect elsewhere, rather than having its sockets cut.
  */
 function installShutdownHandlers(server: http.Server): void {
-  let shuttingDown = false;
-
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-    process.on(signal, () => {
-      if (shuttingDown) return;
-      shuttingDown = true;
-      console.log(`[${config.instanceId}] ${signal} received, shutting down`);
-
-      const forceExit = setTimeout(() => {
-        console.error('[shutdown] took too long, exiting anyway');
-        process.exit(1);
-      }, 10_000);
-      forceExit.unref();
-
-      void (async () => {
-        // WebSockets first, then the HTTP server.
-        //
-        // The other order deadlocks: server.close() only invokes its callback once every connection
-        // has ended, and an open WebSocket never ends on its own — so closing the sockets *inside*
-        // that callback meant the callback never fired, the force-exit timer killed the process ten
-        // seconds later, and none of the cleanup ran.
-        await closeWs();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
-        await Promise.allSettled([closeRedis(), closeMongo(), closeMysql()]);
-        clearTimeout(forceExit);
-        process.exit(0);
-      })();
-    });
+    process.on(signal, () => void shutdown(server, signal, 0));
   }
+}
+
+let shuttingDown = false;
+
+/**
+ * Closes everything down once and exits with `code`.
+ *
+ * Shared by the signal handlers and by the fatal-error path, so a crash gets the same orderly
+ * teardown a redeploy does — WebSocket clients told to reconnect elsewhere, presence deregistered
+ * rather than left to time out.
+ */
+async function shutdown(server: http.Server, reason: string, code: number): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[${config.instanceId}] ${reason} received, shutting down`);
+
+  const forceExit = setTimeout(() => {
+    // Always non-zero: reaching this means the teardown didn't finish, which isn't a clean exit even
+    // when the trigger was an ordinary SIGTERM.
+    console.error('[shutdown] took too long, exiting anyway');
+    process.exit(1);
+  }, 10_000);
+  forceExit.unref();
+
+  // WebSockets first, then the HTTP server.
+  //
+  // The other order deadlocks: server.close() only invokes its callback once every connection has
+  // ended, and an open WebSocket never ends on its own — so closing the sockets *inside* that
+  // callback meant the callback never fired, the force-exit timer killed the process ten seconds
+  // later, and none of the cleanup ran.
+  await closeWs();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await Promise.allSettled([closeRedis(), closeMongo(), closeMysql()]);
+  clearTimeout(forceExit);
+  process.exit(code);
 }

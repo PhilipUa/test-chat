@@ -131,16 +131,38 @@ export async function wsClient(userId, conversationIds) {
 }
 
 /**
+ * The inbox for a user, as a plain array.
+ *
+ * One place that knows the endpoint's response shape, so a change to it doesn't ripple through every
+ * test that only wants the conversations. Tolerates the pre-pagination bare-array form too, which
+ * keeps a paging regression pointed at the tests that assert the shape explicitly rather than
+ * breaking every presence test at the same time.
+ */
+export async function conversationsOf(userId, { limit, cursor } = {}) {
+  const query = new URLSearchParams({ userId: String(userId) });
+  if (limit !== undefined) query.set('limit', String(limit));
+  if (cursor) query.set('cursor', cursor);
+  const res = await get(`/api/conversations?${query}`);
+  if (Array.isArray(res.body)) return res.body;
+  return res.body?.conversations ?? [];
+}
+
+/** How `viewerId` currently sees `userId` in `conversationId` — the participant row, or undefined. */
+export async function presenceOf(viewerId, conversationId, userId) {
+  const conversations = await conversationsOf(viewerId, { limit: 200 });
+  return conversations
+    .find((c) => c.id === conversationId)
+    ?.participants?.find((p) => p.id === userId);
+}
+
+/**
  * Waits until `userId` is reported offline in `conversationId`, so a presence test starts from a
  * known baseline rather than inheriting connections from whatever ran before it.
  */
 export async function waitUntilOffline(viewerId, conversationId, userId, timeoutMs = 90_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const res = await get(`/api/conversations?userId=${viewerId}`);
-    const participant = res.body
-      ?.find((c) => c.id === conversationId)
-      ?.participants?.find((p) => p.id === userId);
+    const participant = await presenceOf(viewerId, conversationId, userId);
     if (participant && !participant.online) return true;
     await sleep(500);
   }

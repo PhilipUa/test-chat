@@ -1,6 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  conversationsOf,
   freshConversation,
   get,
   instanceFingerprints,
@@ -53,8 +54,8 @@ describe('finding A — a failing request must not kill the process', () => {
     assert.match(res.body.error, /unknown participant/i);
 
     // The conversation insert was rolled back, so user 1 has no conversation with this title.
-    const list = await get('/api/conversations?userId=1');
-    assert.equal(list.body.some((c) => c.title === title), false);
+    const list = await conversationsOf(1);
+    assert.equal(list.some((c) => c.title === title), false);
   });
 
   it('returns 400 for malformed JSON rather than dropping the connection', async () => {
@@ -107,7 +108,7 @@ describe('finding D — sends are idempotent on clientId', () => {
     assert.equal(second.status, 200, 'a deduplicated send should report 200, not 201');
     assert.equal(second.body.id, first.body.id, 'both calls must resolve to the same message');
 
-    const page = await get(`/api/messages?conversationId=${conv.id}`);
+    const page = await get(`/api/messages?conversationId=${conv.id}&userId=1`);
     const matching = page.body.messages.filter((m) => m.clientId === clientId);
     assert.equal(matching.length, 1, 'exactly one row should exist for a given clientId');
   });
@@ -127,7 +128,7 @@ describe('finding D — sends are idempotent on clientId', () => {
     const ids = new Set(results.map((r) => r.body.id));
     assert.equal(ids.size, 1, `expected one message id, got ${[...ids].join(', ')}`);
 
-    const page = await get(`/api/messages?conversationId=${conv.id}`);
+    const page = await get(`/api/messages?conversationId=${conv.id}&userId=1`);
     assert.equal(page.body.messages.filter((m) => m.clientId === clientId).length, 1);
   });
 
@@ -135,7 +136,7 @@ describe('finding D — sends are idempotent on clientId', () => {
     const conv = await freshConversation();
     await post('/api/messages', { conversationId: conv.id, senderId: 1, body: 'same text' });
     await post('/api/messages', { conversationId: conv.id, senderId: 1, body: 'same text' });
-    const page = await get(`/api/messages?conversationId=${conv.id}`);
+    const page = await get(`/api/messages?conversationId=${conv.id}&userId=1`);
     assert.equal(page.body.messages.length, 2, 'NULL client_id must not collide in the unique index');
   });
 });
@@ -191,7 +192,7 @@ describe('finding I/M — message shape and consistency', () => {
       body: 'timestamp check',
       clientId: unique('ts'),
     });
-    const page = await get(`/api/messages?conversationId=${conv.id}`);
+    const page = await get(`/api/messages?conversationId=${conv.id}&userId=1`);
     const fetched = page.body.messages.find((m) => m.id === created.body.id);
     assert.equal(fetched.createdAt, created.body.createdAt);
   });
@@ -206,7 +207,7 @@ describe('finding I/M — message shape and consistency', () => {
         clientId: unique('body'),
       });
     }
-    const page = await get(`/api/messages?conversationId=${conv.id}`);
+    const page = await get(`/api/messages?conversationId=${conv.id}&userId=1`);
     assert.equal(page.body.messages.length, 3);
     for (const m of page.body.messages) {
       assert.notEqual(m.body, '', `message ${m.id} came back with an empty body`);
@@ -222,7 +223,7 @@ describe('finding J — pagination', () => {
     const total = 12;
     await seedMessages(conv.id, total);
 
-    const firstPage = await get(`/api/messages?conversationId=${conv.id}&limit=5`);
+    const firstPage = await get(`/api/messages?conversationId=${conv.id}&userId=1&limit=5`);
     assert.equal(firstPage.body.messages.length, 5);
     assert.equal(firstPage.body.hasMore, true);
     // Newest page, returned oldest-to-newest for rendering.
@@ -230,7 +231,7 @@ describe('finding J — pagination', () => {
     assert.equal(firstPage.body.messages[0].body, `page-msg-${total - 5}`);
 
     const older = await get(
-      `/api/messages?conversationId=${conv.id}&limit=5&before=${firstPage.body.nextBefore}`,
+      `/api/messages?conversationId=${conv.id}&userId=1&limit=5&before=${firstPage.body.nextBefore}`,
     );
     assert.equal(older.body.messages.length, 5);
     assert.equal(older.body.messages.at(-1).body, `page-msg-${total - 6}`);
@@ -242,7 +243,7 @@ describe('finding J — pagination', () => {
 
   it('caps an oversized limit rather than dumping the conversation', async () => {
     const conv = await freshConversation();
-    const res = await get(`/api/messages?conversationId=${conv.id}&limit=99999`);
+    const res = await get(`/api/messages?conversationId=${conv.id}&userId=1&limit=99999`);
     assert.equal(res.status, 200);
     assert.ok(Array.isArray(res.body.messages));
   });

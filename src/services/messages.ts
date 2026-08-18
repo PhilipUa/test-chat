@@ -6,7 +6,6 @@ import {
   findBody,
   findRowByClientId,
   insertMessage,
-  touchConversation,
   type MessageRow,
 } from './message-store.ts';
 
@@ -66,7 +65,7 @@ export async function createMessage(input: NewMessage): Promise<CreateResult> {
   const { conversationId, senderId, body, clientId } = input;
 
   if (clientId) {
-    const existing = await findExisting(conversationId, clientId);
+    const existing = await findExisting(conversationId, clientId, { senderId, body });
     if (existing) return { message: existing, deduplicated: true };
   }
 
@@ -77,13 +76,11 @@ export async function createMessage(input: NewMessage): Promise<CreateResult> {
     stored = await insertMessage({ conversationId, senderId, body, clientId, createdAt });
   } catch (err) {
     if (clientId && isDuplicateKeyError(err)) {
-      const existing = await findExisting(conversationId, clientId);
+      const existing = await findExisting(conversationId, clientId, { senderId, body });
       if (existing) return { message: existing, deduplicated: true };
     }
     throw err;
   }
-
-  await touchConversation(conversationId, createdAt);
 
   return {
     message: {
@@ -98,10 +95,45 @@ export async function createMessage(input: NewMessage): Promise<CreateResult> {
   };
 }
 
-async function findExisting(conversationId: number, clientId: string): Promise<Message | null> {
+/**
+ * The message already stored under `clientId`, if any.
+ *
+ * `pending` is the send that is being deduplicated — its body is the fallback for the window where
+ * the winning request has committed its MySQL row but not yet written the Mongo body. Reporting the
+ * empty string there is worse than it looks: the client renders the blank bubble *and* records the
+ * id, so the winner's broadcast is deduplicated away and the message stays blank until a reload.
+ */
+async function findExisting(
+  conversationId: number,
+  clientId: string,
+  pending?: { senderId: number; body: string },
+): Promise<Message | null> {
   const row = await findRowByClientId(conversationId, clientId);
   if (!row) return null;
-  return toMessage(row, await findBody(Number(row.id)));
+
+  const body = await settledBody(Number(row.id));
+  if (body) return toMessage(row, body);
+
+  // Same sender and same idempotency key: this is a retry of the send we are holding, so its body is
+  // the honest answer. Without a match we have nothing better than the empty string.
+  if (pending && Number(row.senderId) === pending.senderId) return toMessage(row, pending.body);
+  return toMessage(row, '');
+}
+
+/**
+ * Reads a body, giving a concurrent two-store write a moment to finish.
+ *
+ * Only reached when the first read came back empty, which is either the millisecond-wide window
+ * between the MySQL and Mongo writes or a genuinely bodyless row. Bounded, so a bodyless row costs a
+ * fixed delay rather than hanging the request.
+ */
+async function settledBody(id: number, attempts = 3, delayMs = 25): Promise<string> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const body = await findBody(id);
+    if (body) return body;
+    if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return '';
 }
 
 export interface MessagePage {
@@ -160,7 +192,10 @@ export async function listMessages(
 
   return {
     messages: page.map((r) => toMessage(r, bodyById.get(Number(r.id)) ?? '')),
-    nextBefore: page.length ? Number(page[0]!.id) : null,
+    // Null unless there is genuinely an older page: it used to be the oldest id on the page even at
+    // the start of history, contradicting its own contract. Meaningless walking forwards, where
+    // `latestId` is the cursor.
+    nextBefore: !forwards && hasMore && page.length ? Number(page[0]!.id) : null,
     hasMore,
     latestId: page.length ? Number(page[page.length - 1]!.id) : null,
   };

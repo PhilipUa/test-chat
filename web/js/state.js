@@ -29,6 +29,9 @@ export const state = {
   userId: initialUserId(),
   users: [],
   conversations: [],
+  /** Cursor for the next page of the inbox, or null when the whole list is loaded. */
+  conversationsCursor: null,
+  hasMoreConversations: false,
   activeConversation: null,
 
   /** Oldest message id currently rendered — the cursor for "load older". */
