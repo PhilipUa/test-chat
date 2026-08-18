@@ -1,5 +1,8 @@
 import { config } from '../config.ts';
-import { participantConversationIds, participantIdsOf } from '../services/conversations.ts';
+import {
+  participantConversationIds,
+  participantIdsOf,
+} from '../services/conversations/membership.ts';
 import { onlineAmong, connectionClosed, connectionOpened } from '../services/presence.ts';
 import { consumeTypingQuota } from '../services/rate-limit.ts';
 import { getUserName } from '../services/users.ts';

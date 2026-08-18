@@ -1,6 +1,6 @@
 import { config } from '../config.ts';
 import { messageBodies, tokenizeBody } from '../db/mongo.ts';
-import { isDuplicateKeyError, queryOne, runWrite } from '../db/mysql.ts';
+import { queryOne, runWrite } from '../db/mysql.ts';
 import { sign } from './message-signing.ts';
 
 /**
@@ -108,4 +108,4 @@ export async function touchConversation(conversationId: number, at: Date): Promi
   ]).catch(() => {});
 }
 
-export { SELECT_COLUMNS, isDuplicateKeyError };
+export { SELECT_COLUMNS };

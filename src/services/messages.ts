@@ -1,12 +1,11 @@
 import { config } from '../config.ts';
 import { messageBodiesById } from '../db/mongo.ts';
-import { queryRows } from '../db/mysql.ts';
+import { isDuplicateKeyError, queryRows } from '../db/mysql.ts';
 import {
   SELECT_COLUMNS,
   findBody,
   findRowByClientId,
   insertMessage,
-  isDuplicateKeyError,
   touchConversation,
   type MessageRow,
 } from './message-store.ts';

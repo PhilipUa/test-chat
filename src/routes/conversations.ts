@@ -3,12 +3,9 @@ import { config } from '../config.ts';
 import { asyncHandler } from '../http/errors.ts';
 import { enforceRateLimit } from '../http/rate-limit-headers.ts';
 import { int, intArray, nonEmptyString } from '../http/validate.ts';
-import {
-  assertParticipant,
-  createConversation,
-  listConversations,
-  markRead,
-} from '../services/conversations.ts';
+import { createConversation, markRead } from '../services/conversations/commands.ts';
+import { assertParticipant } from '../services/conversations/membership.ts';
+import { listConversations } from '../services/conversations/queries.ts';
 import { consumeCreateQuota } from '../services/rate-limit.ts';
 import { publish } from '../ws/hub.ts';
 

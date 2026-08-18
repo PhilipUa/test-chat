@@ -3,7 +3,7 @@ import { config } from '../config.ts';
 import { asyncHandler } from '../http/errors.ts';
 import { enforceRateLimit } from '../http/rate-limit-headers.ts';
 import { int, intOr, nonEmptyString, optionalClientId, optionalInt } from '../http/validate.ts';
-import { assertParticipant } from '../services/conversations.ts';
+import { assertParticipant } from '../services/conversations/membership.ts';
 import { createMessage, listMessages } from '../services/messages.ts';
 import { consumeSendQuota } from '../services/rate-limit.ts';
 import { publish } from '../ws/hub.ts';

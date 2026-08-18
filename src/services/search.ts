@@ -1,7 +1,8 @@
 import type { Filter } from 'mongodb';
 import { config } from '../config.ts';
 import { messageBodies, type MessageBody } from '../db/mongo.ts';
-import { conversationTitles, participantConversationIds } from './conversations.ts';
+import { participantConversationIds } from './conversations/membership.ts';
+import { conversationTitles } from './conversations/queries.ts';
 
 /**
  * Search — tasks/search.md
