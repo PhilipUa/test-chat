@@ -100,3 +100,46 @@ The final pass initially reported one failure at three replicas, and both script
 ECONNREFUSED. That was Docker's daemon stopping mid-run, not the refactor — after restarting it,
 70/70 passed at three replicas and both scripts were clean. Recording it because "one test failed
 once" is worth knowing the cause of.
+
+
+## Post-refactor manual pass
+
+After the refactor I drove the whole app by hand in a browser — two tabs, every feature — rather than
+trusting the suite. The suite was green throughout; the manual pass found three things it didn't.
+
+**Two rendering races.** `openConversation` clears the pane and *then* awaits the history fetch, so
+anything appended during that await raced with the render: a message sent inside the window ended up
+above the history, and switching conversations quickly let a slower earlier fetch paint into the newer
+conversation's pane. Both fixed (insert-above, plus a load generation guard).
+
+The tests for these are worth a note. The first version of each **passed with its fix reverted**,
+which makes them worse than nothing:
+
+- The ordering test clicked and typed at normal speed, and the fetch always won. Delaying the history
+  GET through request interception made the race deterministic — and that version immediately caught a
+  *second* bug in my own fix: building the history fragment by hand skipped the dedup `appendMessage`
+  does for free, so a message rendered by its broadcast and also present in the late history appeared
+  twice. Worse than the bug I was fixing.
+- The switching test seeded both conversations with identical message bodies, so it couldn't tell
+  whose history had been painted.
+
+Both now fail when their fix is reverted, which is the only evidence that a regression test is real.
+
+**An overstated connection status.** The UI showed `live` the moment the socket opened. An open socket
+receives nothing until the server has processed its subscribe frame, and anything published in that
+gap is lost, because catch-up only runs on connect. This was the true cause of a UI test that failed
+about one run in three at three replicas — I would have written that off as flakiness. The status now
+reads `subscribing…` until the server's `subscribed` acknowledgement arrives.
+
+**A demo-data bug.** `generate-demo-data.ts` spaced conversations an hour apart while spacing messages
+a minute apart, so any conversation longer than 60 messages overflowed into the future — an inbox
+sorted by a timestamp that hadn't happened yet. It briefly looked like an ordering bug in the app;
+`EXPLAIN` on the actual data showed the app was sorting correctly and the generator was wrong.
+
+What the manual pass confirmed working, for the record: pagination (50 of 70, then load-older to 70,
+no duplicates), send with optimistic reconciliation (one copy, count and preview updated), live
+delivery between two tabs, typing in both the open conversation and the sidebar, presence dots and the
+header line, unread counting and clearing and surviving a reload, search by whole word / prefix /
+no-match plus paging 25→50, both rate limits surfacing in the UI with the typed text preserved,
+conversation creation, XSS payloads rendering as literal text, and reconnect-with-catch-up after the
+API was stopped and restarted underneath an open page.
