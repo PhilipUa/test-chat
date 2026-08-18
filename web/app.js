@@ -742,6 +742,18 @@ el('newConv').onclick = async () => {
 el('userSelect').onchange = async (e) => {
   state.userId = Number(e.target.value);
   sessionStorage.setItem('relay.userId', String(state.userId));
+
+  // Keep the URL in step with the choice.
+  //
+  // initialUserId() reads ?userId= *before* sessionStorage, so leaving a stale value in the URL
+  // meant a reload silently reverted the switch — and overwrote the stored choice on the way. The
+  // switch worked, the URL disagreed with it, and a refresh sided with the URL.
+  //
+  // replaceState rather than pushState: changing who you are isn't a navigation step, and it
+  // shouldn't take a Back press to undo.
+  const url = new URL(location.href);
+  url.searchParams.set('userId', String(state.userId));
+  history.replaceState(null, '', url);
   state.activeConversation = null;
   state.rendered.clear();
   state.lastSeen.clear();
