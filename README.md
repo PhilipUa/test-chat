@@ -43,13 +43,24 @@ http://localhost:3000/?userId=2     # Bob
 docker compose up -d --scale api=3
 ```
 
+Scaling is manual — Compose has no autoscaler, and `--scale` is a number you type. What *is* automatic
+is discovery: Envoy re-resolves the `api` hostname every 5s, so a new replica takes traffic about 6s
+after it starts, with no proxy restart. `npm run autoscale` adds the missing control loop (load-driven,
+host-side, and honest about being a demonstration — see [`docs/09-scaling.md`](docs/09-scaling.md)):
+
+```
+npm run autoscale -- --dry-run          # decide and log, change nothing
+npm run autoscale                       # min 2, max 6, scale on connections per replica
+```
+
 Realtime state is shared through Redis, so replicas are interchangeable. `curl localhost:9901/clusters`
 shows which replicas Envoy has discovered, and `/api/health` reports which one served you.
 
 ### Tests
 
-139 tests — 81 API-level, 17 in a real browser, 41 unit tests (the error-handling helpers, the
-WebSocket connection lifecycle, the process error policy, and the browser helpers):
+149 tests — 81 API-level, 17 in a real browser, 51 unit tests (the error-handling helpers, the
+WebSocket connection lifecycle, the process error policy, the autoscaling decision, and the browser
+helpers):
 
 ```
 npm install
@@ -70,6 +81,8 @@ docker compose exec api \
   node scripts/probe-ws-lifecycle.mjs         # does a socket that dies mid-subscribe leak channels?
 node scripts/probe-scaling.mjs                # is traffic really spread, and does the app still
                                               # behave like one system? (read-only)
+node scripts/probe-scale-transition.mjs       # does changing the replica count 3->5->3 drop a request
+                                              # or a connected client? (restores the count it found)
 node scripts/probe-failover.mjs               # what a connected user experiences when a replica
                                               # goes away, hard and gracefully (stops one at a time,
                                               # and starts it again afterwards)

@@ -39,6 +39,9 @@ Scaling from 3 to 5 needed no proxy restart — `STRICT_DNS` re-resolves, and th
 serving an even share within seconds. The distribution being *exactly* even (18 each) is round-robin
 doing what it says.
 
+That scale-up was originally done by hand, and this document presented it as though it were covered.
+It is now `scripts/probe-scale-transition.mjs` — see "Testing the transition" below.
+
 The probe checks the two questions separately on purpose: is traffic actually spread, and given that,
 does the app still behave like one system. A probe that quietly ran against a single replica would pass
 every cross-replica assertion while proving nothing, so it fails if the endpoints it can see don't all
@@ -194,3 +197,84 @@ And the boundary: Postman's WebSocket requests can't run inside a collection or 
 the collection covers the HTTP half only. The realtime fan-out — the actual substance of
 `tasks/multi-instance.md` — stays with `scripts/probe-scaling.mjs` and `tests/realtime.test.mjs`. A green
 Postman run is not "multi-instance works", and `postman/README.md` says so where someone will read it.
+
+---
+
+## Testing the transition (and why "autoscaling" was never in scope)
+
+Worth separating two things that get conflated, because the answer to "why doesn't the autoscaling test
+pass?" was: there wasn't any autoscaling.
+
+- **Discovery** was already automatic. Envoy's `STRICT_DNS` with `dns_refresh_rate: 5s` picks up a new
+  replica in about 6s with no restart. Measured: `envoy saw 4 endpoints after 6s`.
+- **Scaling** was manual. `--scale N` is a number a human types; nothing measured load and changed it.
+  Compose has no autoscaler, and `deploy.replicas` is Swarm-only and still fixed.
+
+So there were two gaps, and both are now closed.
+
+### The transition itself: `scripts/probe-scale-transition.mjs`
+
+`probe-scaling.mjs` checks that N replicas behave like one system. This checks the *change* — scaling up
+and back down with traffic and WebSockets live:
+
+```
+═══ scaling up: 3 → 5 ═══
+  PASS  the proxy converges on the new replica count          5 endpoints after 1.5s
+  PASS  no request failed while the replica count changed     47 GETs + 47 POSTs, all served
+  PASS  a newly started replica actually takes traffic        2 replicas served that were not before
+  PASS  and receives a message published afterwards, exactly once   copies: [1,1,1,1,1,1]
+
+═══ scaling down: 5 → 3 ═══
+  PASS  the proxy converges on the new replica count          3 endpoints after 2.0s
+  PASS  no request failed while the replica count changed     12 GETs + 12 POSTs, all served
+  socket churn: 14 connects, closes=[1001,1001]
+  PASS  departing replicas closed their sockets gracefully (1001), not abruptly
+```
+
+Its clients reconnect, like the browser does — a scale-down *will* close the sockets on a departing
+replica, and the question is whether a user keeps receiving, not whether their first socket survived.
+
+Two mistakes of mine are worth recording, because both would have produced a green run that proved
+nothing:
+
+- **The first version's eviction check passed vacuously.** Existing sockets don't migrate, so every
+  client was on a replica that predated the scale-up, and the scale-down removed the *newest* replicas —
+  `closes=[]`, nothing evicted, assertion satisfied. It now opens a second batch of clients while the
+  stack is wide, and if nothing gets evicted it **fails** rather than passing, because there was nothing
+  to judge.
+- **`compose up --scale` re-ran the seed job** and waited on every database on each transition. Fixed
+  with `--no-deps` and an explicit service.
+
+### The missing control loop: `scripts/autoscale.mjs`
+
+The decision is a pure function in `autoscale-policy.mjs`, unit tested in `tests/autoscale.test.mjs`;
+the script around it samples, decides, and runs `compose up --scale`.
+
+The signal is **WebSocket connections per replica**, not CPU. For a chat app CPU is the wrong measure and
+would be wrong under a Kubernetes HPA too: an instance holding 10,000 idle sockets is near its limit and
+looks unloaded.
+
+The part worth testing is the anti-flap rule, which two watermarks don't give you on their own. Shedding
+a replica raises the load on the ones that remain; if that would push them over the *up* watermark, the
+next tick adds it straight back. So a scale-down that would trip the up watermark is refused.
+
+Driven with 12 real sockets against a 3-replica stack:
+
+```
+scale up: 3 → 4 — above 2 per replica (14 connection(s) over 3 replica(s) = 4.7 each)
+hold at 4 — cooling down for another 12s
+scale up: 4 → 5 — above 2 per replica (14 over 4 = 3.5 each)
+scale up: 5 → 6 — above 2 per replica (14 over 5 = 2.8 each)
+   ... sockets dropped ...
+scale down: 6 → 5 — below 1 per replica (2 over 6 = 0.3 each)
+scale down: 5 → 4 — below 1 per replica
+scale down: 4 → 3 — below 1 per replica
+```
+
+One step per cooldown in both directions, stopping at the bounds, no oscillation.
+
+**What it is not.** It runs on the host, because scaling Compose needs the docker CLI and the alternative
+— a container with `/var/run/docker.sock` mounted — hands root-equivalent access to anything that can
+reach that container. Not a trade worth making for a demo stack. In production the answer isn't this
+script: it's a Kubernetes HPA scaling a Deployment, where the scaling authority already exists and is
+scoped to it. What transfers is the signal and the anti-flap rule, not the plumbing.
