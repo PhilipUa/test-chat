@@ -1,12 +1,19 @@
 import { isDuplicateKeyError, pool, withTransaction } from '../db/mysql.ts';
 import { messageBodies } from '../db/mongo.ts';
 import { HttpError } from '../http/errors.ts';
+import { onlineAmong } from './presence.ts';
 
 export interface LastMessage {
   id: number;
   senderId: number;
   body: string;
   createdAt: string;
+}
+
+export interface Participant {
+  id: number;
+  name: string;
+  online: boolean;
 }
 
 export interface ConversationSummary {
@@ -16,6 +23,8 @@ export interface ConversationSummary {
   unreadCount: number;
   lastReadMessageId: number;
   lastMessage: LastMessage | null;
+  /** Other participants, with live presence — lets the UI show who's around. */
+  participants: Participant[];
 }
 
 /**
@@ -57,6 +66,11 @@ export async function listConversations(userId: number): Promise<ConversationSum
     : [];
   const bodyById = new Map(bodies.map((b) => [b._id, b.body]));
 
+  // Participants for every conversation in one query rather than one per row — the same N+1 the
+  // rest of this function exists to avoid.
+  const conversationIds = rows.map((r) => Number(r.id));
+  const participantsByConversation = await participantsFor(conversationIds, userId);
+
   return rows.map((r) => ({
     id: Number(r.id),
     title: r.title,
@@ -71,7 +85,39 @@ export async function listConversations(userId: number): Promise<ConversationSum
           createdAt: new Date(r.lastCreatedAt).toISOString(),
         }
       : null,
+    participants: participantsByConversation.get(Number(r.id)) ?? [],
   }));
+}
+
+/**
+ * The other participants of each conversation, with presence. One query for all conversations and
+ * one Redis lookup for all users, rather than a round trip per row.
+ */
+async function participantsFor(
+  conversationIds: number[],
+  excludeUserId: number,
+): Promise<Map<number, Participant[]>> {
+  const result = new Map<number, Participant[]>();
+  if (!conversationIds.length) return result;
+
+  const [rows] = await pool.query<any[]>(
+    `SELECT p.conversation_id AS conversationId, u.id, u.name
+     FROM conversation_participants p
+     JOIN users u ON u.id = p.user_id
+     WHERE p.conversation_id IN (${conversationIds.map(() => '?').join(',')})
+       AND p.user_id <> ?
+     ORDER BY u.name ASC`,
+    [...conversationIds, excludeUserId],
+  );
+
+  const online = await onlineAmong([...new Set(rows.map((r) => Number(r.id)))]);
+  for (const row of rows) {
+    const conversationId = Number(row.conversationId);
+    const list = result.get(conversationId) ?? [];
+    list.push({ id: Number(row.id), name: row.name, online: online.has(Number(row.id)) });
+    result.set(conversationId, list);
+  }
+  return result;
 }
 
 /**

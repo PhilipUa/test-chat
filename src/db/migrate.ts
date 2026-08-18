@@ -37,6 +37,17 @@ async function indexExists(table: string, index: string): Promise<boolean> {
 
 const migrations: Migration[] = [
   {
+    // Two extra demo users. Also gives the presence tests identities nothing else uses.
+    name: 'users: extra demo users',
+    run: async () => {
+      await pool.query(
+        `INSERT IGNORE INTO users (id, name, email) VALUES
+           (4, 'Dave', 'dave@example.com'),
+           (5, 'Erin', 'erin@example.com')`,
+      );
+    },
+  },
+  {
     // Finding F: every query filters by conversation_id and there was no index on it.
     // Covering (conversation_id, id) also serves `ORDER BY id` and `MAX(id)` as index seeks.
     name: 'messages: index (conversation_id, id)',

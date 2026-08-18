@@ -5,6 +5,12 @@ import { config } from '../config.ts';
 import { redis, redisSubscriber } from '../db/redis.ts';
 import { participantConversationIds } from '../services/conversations.ts';
 import { getUserName } from '../services/users.ts';
+import {
+  connectionClosed,
+  connectionHeartbeat,
+  connectionOpened,
+  onlineAmong,
+} from '../services/presence.ts';
 import { consumeTypingQuota } from '../services/rate-limit.ts';
 import {
   channelFor,
@@ -12,6 +18,7 @@ import {
   type ConversationEvent,
   type FanoutEnvelope,
 } from './events.ts';
+import { participantIdsOf } from '../services/conversations.ts';
 
 /**
  * WebSocket hub.
@@ -44,6 +51,15 @@ const channelRefs = new Map<number, number>();
 
 let heartbeat: NodeJS.Timeout | undefined;
 let wss: WebSocketServer | undefined;
+/**
+ * Whether our Redis subscriber is currently connected.
+ *
+ * Redis pub/sub is at-most-once: anything published while this instance is disconnected from Redis
+ * is gone, and — crucially — the client's WebSocket stays open throughout, so the browser has no
+ * idea it stopped receiving. That was a silent hole. When the subscriber recovers we tell every
+ * local client to resync, and they pull what they missed via `GET /api/messages?since=`.
+ */
+let subscriberConnected = true;
 
 export function attachWs(server: Server): void {
   wss = new WebSocketServer({ server, path: '/' });
@@ -72,8 +88,10 @@ export function attachWs(server: Server): void {
 
     ws.on('close', () => {
       clients.delete(client);
-      for (const id of client.subs) releaseChannel(id);
+      const subs = [...client.subs];
+      for (const id of subs) releaseChannel(id);
       client.subs.clear();
+      void handleDisconnect(client, subs);
     });
   });
 
@@ -82,6 +100,7 @@ export function attachWs(server: Server): void {
   // Finding K: without a heartbeat, sockets that died without a close frame are never reaped —
   // the client set grows and we keep writing to nobody.
   heartbeat = setInterval(() => {
+    const live: Client[] = [];
     for (const client of clients) {
       if (client.ws.readyState !== WebSocket.OPEN) continue;
       if (client.missedPings >= 2) {
@@ -90,9 +109,30 @@ export function attachWs(server: Server): void {
       }
       client.missedPings += 1;
       client.ws.ping();
+      if (client.userId) live.push(client);
     }
+    // Presence is refreshed per connection from the heartbeat, so it stays true exactly as long
+    // as a socket is genuinely alive — and ages out on its own if the process dies.
+    for (const client of live) void connectionHeartbeat(client.userId!, client.id);
   }, config.ws.heartbeatIntervalMs);
   heartbeat.unref();
+
+  // ioredis re-issues SUBSCRIBE for us on reconnect, so the gap is bounded by the outage — but
+  // the events published during it are lost, which is what the resync nudge is for.
+  redisSubscriber.on('end', () => {
+    subscriberConnected = false;
+  });
+  redisSubscriber.on('close', () => {
+    subscriberConnected = false;
+  });
+  redisSubscriber.on('ready', () => {
+    if (subscriberConnected) return;
+    subscriberConnected = true;
+    console.warn('[ws] redis subscriber reconnected; asking clients to resync');
+    for (const client of clients) {
+      send(client, { type: 'resync', reason: 'realtime-reconnected' });
+    }
+  });
 
   redisSubscriber.on('message', (channel, payload) => {
     const conversationId = conversationIdFromChannel(channel);
@@ -161,6 +201,53 @@ async function handleSubscribe(client: Client, frame: any): Promise<void> {
   client.subs = next;
 
   send(client, { type: 'subscribed', conversationIds: [...next] });
+
+  // Presence: register this connection and announce only if it's what brought the user online.
+  // The registry itself reports that, so we never have to infer it from this instance's own
+  // socket list — which is what previously got the transition wrong.
+  const cameOnline = await connectionOpened(userId, client.id);
+  if (cameOnline) await announcePresence(userId, [...next], true);
+
+  // Snapshot of who else is already online, so the client isn't blind until the next change.
+  await sendPresenceSnapshot(client);
+}
+
+/** Tells the client which participants of its conversations are online right now. */
+async function sendPresenceSnapshot(client: Client): Promise<void> {
+  if (!client.subs.size) return;
+  const byConversation = await Promise.all(
+    [...client.subs].map(async (conversationId) => {
+      const participants = await participantIdsOf(conversationId);
+      const online = await onlineAmong(participants.filter((id) => id !== client.userId));
+      return { conversationId, online: [...online] };
+    }),
+  );
+  send(client, { type: 'presence-snapshot', conversations: byConversation });
+}
+
+async function announcePresence(
+  userId: number,
+  conversationIds: number[],
+  online: boolean,
+): Promise<void> {
+  const userName = await getUserName(userId);
+  for (const conversationId of conversationIds) {
+    await publish(conversationId, { type: 'presence', conversationId, userId, userName, online });
+  }
+}
+
+/**
+ * When a socket closes, the user is only offline if that was their last live connection anywhere —
+ * otherwise closing one of two tabs would report them as gone.
+ */
+async function handleDisconnect(client: Client, wasSubscribedTo: number[]): Promise<void> {
+  const userId = client.userId;
+  if (!userId) return;
+
+  // The registry deregisters this one connection and tells us whether any remain — on any
+  // instance, in any tab. Only the connection that empties it announces the user offline.
+  const wentOffline = await connectionClosed(userId, client.id);
+  if (wentOffline) await announcePresence(userId, wasSubscribedTo, false);
 }
 
 /** tasks/typing-indicator.md */
@@ -225,6 +312,8 @@ function deliverLocally(conversationId: number, envelope: FanoutEnvelope): void 
     // Don't echo a typing indicator back to the person typing.
     if (envelope.originConnectionId && envelope.originConnectionId === client.id) continue;
     if (envelope.event.type === 'typing' && envelope.event.userId === client.userId) continue;
+    // You don't need to be told about your own presence.
+    if (envelope.event.type === 'presence' && envelope.event.userId === client.userId) continue;
     client.ws.send(data);
   }
 }
@@ -259,11 +348,24 @@ export function hubStats() {
     instanceId: config.instanceId,
     connections: clients.size,
     subscribedConversations: channelRefs.size,
+    realtimeConnected: subscriberConnected,
   };
 }
 
 export async function closeWs(): Promise<void> {
   if (heartbeat) clearInterval(heartbeat);
+
+  // Deregister our connections before we go. Without this, a rolling deploy leaves every
+  // connected user looking online for the whole presence TTL: the members are ours, the instance
+  // that owned them is gone, and nothing else can tell the difference between "stale" and
+  // "genuinely connected elsewhere". The TTL would clean it up eventually — but "eventually" is
+  // exactly the wrong answer during a deploy.
+  await Promise.allSettled(
+    [...clients]
+      .filter((c) => c.userId)
+      .map((c) => connectionClosed(c.userId!, c.id)),
+  );
+
   for (const client of clients) {
     client.ws.close(1001, 'server shutting down');
   }

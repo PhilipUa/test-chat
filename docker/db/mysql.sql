@@ -50,7 +50,12 @@ CREATE TABLE messages (
 INSERT INTO users (id, name, email) VALUES
   (1, 'Alice', 'alice@example.com'),
   (2, 'Bob', 'bob@example.com'),
-  (3, 'Carol', 'carol@example.com');
+  (3, 'Carol', 'carol@example.com'),
+  -- Dave and Erin exist so the presence tests have identities no other test connects as.
+  -- Presence is shared, TTL-based state, so a test asserting "X is offline" is otherwise at the
+  -- mercy of whatever else recently held a socket for X.
+  (4, 'Dave', 'dave@example.com'),
+  (5, 'Erin', 'erin@example.com');
 
 INSERT INTO conversations (id, title) VALUES
   (1, 'Support — order #1042'),

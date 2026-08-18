@@ -28,7 +28,15 @@ export interface ReadEvent {
   lastReadMessageId: number;
 }
 
-export type ConversationEvent = MessageEvent | TypingEvent | ReadEvent;
+export interface PresenceEvent {
+  type: 'presence';
+  conversationId: number;
+  userId: number;
+  userName: string;
+  online: boolean;
+}
+
+export type ConversationEvent = MessageEvent | TypingEvent | ReadEvent | PresenceEvent;
 
 /** Envelope used on the Redis channel only — carries routing metadata the browser never sees. */
 export interface FanoutEnvelope {
