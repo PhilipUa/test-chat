@@ -1,0 +1,709 @@
+{
+  "info": {
+    "name": "Relay \u00b7 scaling and load balancing",
+    "_postman_id": "b7e4b6a1-5c3f-4a92-9a1e-relay-scaling",
+    "description": "Load-balancing checks for Relay, over HTTP.\n\nThe question each folder asks:\n  1. Is the proxy actually spreading traffic across every replica?\n  2. Given that it is, does every replica give the SAME answer about shared state?\n\nBoth matter, and the second is meaningless without the first \u2014 a collection that quietly ran against one replica would pass every agreement check while proving nothing. So the distribution test asserts it saw `expectedReplicas` distinct instances, and fails if it did not.\n\nAttribution comes from the `X-Relay-Instance` response header.\n\nWHAT THIS DELIBERATELY DOES NOT COVER: the realtime side. The core of multi-instance is that a message published on one replica reaches WebSocket clients on the others, and Postman's WebSocket requests cannot run inside a collection or carry test scripts. `scripts/probe-scaling.mjs` and `tests/realtime.test.mjs` cover that half; this covers the HTTP half. Do not read a green run here as 'multi-instance works'.\n\nRun it in the Collection Runner or with Newman \u2014 several requests loop themselves via `postman.setNextRequest`, which a single Send ignores:\n\n  docker compose up -d --scale api=3\n  npm run test:postman\n\nSet `expectedReplicas` to match your scale.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "expectedReplicas",
+      "value": "3",
+      "type": "string"
+    },
+    {
+      "key": "samples",
+      "value": "60",
+      "type": "string"
+    },
+    {
+      "key": "replicaSweep",
+      "value": "12",
+      "type": "string"
+    },
+    {
+      "key": "burstSize",
+      "value": "8",
+      "type": "string"
+    },
+    {
+      "key": "sendLimit",
+      "value": "5",
+      "type": "string"
+    },
+    {
+      "key": "userId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "otherUserId",
+      "value": "2",
+      "type": "string"
+    },
+    {
+      "key": "strangerUserId",
+      "value": "4",
+      "type": "string"
+    },
+    {
+      "key": "replicaHits",
+      "value": "{}",
+      "type": "string"
+    },
+    {
+      "key": "replicaProblems",
+      "value": "[]",
+      "type": "string"
+    },
+    {
+      "key": "sampleCount",
+      "value": "0",
+      "type": "string"
+    },
+    {
+      "key": "rywSeen",
+      "value": "{}",
+      "type": "string"
+    },
+    {
+      "key": "rywCount",
+      "value": "0",
+      "type": "string"
+    },
+    {
+      "key": "unreadAnswers",
+      "value": "{}",
+      "type": "string"
+    },
+    {
+      "key": "unreadCount",
+      "value": "0",
+      "type": "string"
+    },
+    {
+      "key": "burstStatuses",
+      "value": "[]",
+      "type": "string"
+    },
+    {
+      "key": "burstServers",
+      "value": "[]",
+      "type": "string"
+    },
+    {
+      "key": "conversationId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "marker",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "runTag",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "burstClientId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "writtenBy",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Reset the accumulators once per run, so a second run in the same session doesn't inherit",
+          "// the first one's histogram and report replicas that never answered this time.",
+          "if (!pm.collectionVariables.get('runStarted')) {",
+          "  pm.collectionVariables.set('runStarted', String(Date.now()));",
+          "  pm.collectionVariables.set('replicaHits', '{}');",
+          "  pm.collectionVariables.set('replicaProblems', '[]');",
+          "  pm.collectionVariables.set('sampleCount', '0');",
+          "  pm.collectionVariables.set('rywSeen', '{}');",
+          "  pm.collectionVariables.set('rywCount', '0');",
+          "  pm.collectionVariables.set('unreadAnswers', '{}');",
+          "  pm.collectionVariables.set('unreadCount', '0');",
+          "  pm.collectionVariables.set('burstStatuses', '[]');",
+          "  pm.collectionVariables.set('burstServers', '[]');",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1 \u00b7 is traffic spread",
+      "description": "Whether the proxy is doing its job. Everything after this depends on it.",
+      "item": [
+        {
+          "name": "Load balancing \u00b7 which replica answers (loops)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            },
+            "description": "Loops `samples` times, accumulating which replica answered, then asserts once. Also checks each replica reports its own dependencies up \u2014 a replica serving traffic with a dead Redis subscriber is exactly the kind of thing round-robin hides."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Accumulates across the loop and asserts once, on the final sample \u2014 so the run prints a",
+                  "// handful of verdicts instead of one per request.",
+                  "const SAMPLES = Number(pm.collectionVariables.get('samples')) || 60;",
+                  "const EXPECTED = Number(pm.collectionVariables.get('expectedReplicas')) || 3;",
+                  "",
+                  "const instance = pm.response.headers.get('X-Relay-Instance');",
+                  "const hits = JSON.parse(pm.collectionVariables.get('replicaHits') || '{}');",
+                  "const problems = JSON.parse(pm.collectionVariables.get('replicaProblems') || '[]');",
+                  "",
+                  "if (pm.response.code !== 200) {",
+                  "  problems.push('status ' + pm.response.code);",
+                  "} else if (!instance) {",
+                  "  problems.push('no X-Relay-Instance header');",
+                  "} else {",
+                  "  hits[instance] = (hits[instance] || 0) + 1;",
+                  "  const body = pm.response.json();",
+                  "  if (body.instanceId !== instance) problems.push(instance + ' header disagrees with its own body');",
+                  "  if (body.redis !== true) problems.push(instance + ' reports redis down');",
+                  "  if (body.realtimeConnected !== true) problems.push(instance + ' reports realtime disconnected');",
+                  "}",
+                  "",
+                  "pm.collectionVariables.set('replicaHits', JSON.stringify(hits));",
+                  "pm.collectionVariables.set('replicaProblems', JSON.stringify(problems));",
+                  "",
+                  "const n = Number(pm.collectionVariables.get('sampleCount') || 0) + 1;",
+                  "pm.collectionVariables.set('sampleCount', String(n));",
+                  "",
+                  "if (n < SAMPLES) {",
+                  "  // Loops this request. Only does anything in the Collection Runner or Newman \u2014",
+                  "  // a single Send just runs it once, which is why this is a Runner/Newman collection.",
+                  "  pm.execution.setNextRequest('Load balancing \u00b7 which replica answers (loops)');",
+                  "} else {",
+                  "  const replicas = Object.keys(hits);",
+                  "  const counts = replicas.map((r) => hits[r]);",
+                  "  const fairShare = SAMPLES / Math.max(replicas.length, 1);",
+                  "  const histogram = replicas.map((r) => r + '=' + hits[r]).join(' ');",
+                  "",
+                  "  pm.test('every sample was a healthy, attributable response', function () {",
+                  "    pm.expect(problems, problems.join('; ')).to.be.an('array').that.is.empty;",
+                  "  });",
+                  "",
+                  "  pm.test('traffic reached all ' + EXPECTED + ' expected replicas (saw ' + replicas.length + ': ' + histogram + ')', function () {",
+                  "    pm.expect(replicas.length, 'distinct replicas over ' + SAMPLES + ' requests').to.eql(EXPECTED);",
+                  "  });",
+                  "",
+                  "  pm.test('no replica was starved of traffic', function () {",
+                  "    if (replicas.length < 2) { pm.expect(true).to.be.true; return; }",
+                  "    pm.expect(Math.min.apply(null, counts), 'least-used replica, even split would be ' + fairShare.toFixed(1)).to.be.at.least(fairShare * 0.5);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2 \u00b7 do all replicas agree",
+      "description": "Shared state must not depend on which replica answers.",
+      "item": [
+        {
+          "name": "Setup \u00b7 create a conversation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/conversations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "conversations"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"{{runTag}}\",\n  \"participantIds\": [{{userId}}, {{otherUserId}}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A conversation of this run's own, so a burst of sends can't disturb the demo data or another run.",
+                  "pm.collectionVariables.set('runTag', 'postman-scaling-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the conversation was created', function () {",
+                  "  pm.response.to.have.status(201);",
+                  "});",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('conversationId', String(body.id));",
+                  "pm.test('and it carries the replica that created it', function () {",
+                  "  pm.expect(pm.response.headers.get('X-Relay-Instance')).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup \u00b7 send one message as the other user",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conversationId\": {{conversationId}},\n  \"senderId\": {{otherUserId}},\n  \"body\": \"{{marker}}\",\n  \"clientId\": \"{{marker}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('marker', 'marker-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the message was written', function () {",
+                  "  pm.response.to.have.status(201);",
+                  "});",
+                  "pm.collectionVariables.set('writtenBy', pm.response.headers.get('X-Relay-Instance') || '');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Shared state \u00b7 read-your-writes from every replica (loops)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/messages?conversationId={{conversationId}}&userId={{userId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "conversationId",
+                  "value": "{{conversationId}}"
+                },
+                {
+                  "key": "userId",
+                  "value": "{{userId}}"
+                }
+              ]
+            },
+            "description": "Read-your-writes across the load balancer: the write landed on one replica and these reads land wherever the proxy sends them."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The write landed on one replica. Every replica must serve it immediately \u2014 the stores are shared,",
+                  "// so 'I just wrote this and now it is missing' would mean the load balancer had exposed a split brain.",
+                  "const ATTEMPTS = Number(pm.collectionVariables.get('replicaSweep')) || 12;",
+                  "const EXPECTED = Number(pm.collectionVariables.get('expectedReplicas')) || 3;",
+                  "const marker = pm.collectionVariables.get('marker');",
+                  "",
+                  "const seen = JSON.parse(pm.collectionVariables.get('rywSeen') || '{}');",
+                  "const instance = pm.response.headers.get('X-Relay-Instance') || 'unknown';",
+                  "const found = pm.response.code === 200 && pm.response.json().messages.some((m) => m.body === marker);",
+                  "seen[instance] = (seen[instance] === false) ? false : found;",
+                  "pm.collectionVariables.set('rywSeen', JSON.stringify(seen));",
+                  "",
+                  "const n = Number(pm.collectionVariables.get('rywCount') || 0) + 1;",
+                  "pm.collectionVariables.set('rywCount', String(n));",
+                  "",
+                  "if (n < ATTEMPTS) {",
+                  "  pm.execution.setNextRequest('Shared state \u00b7 read-your-writes from every replica (loops)');",
+                  "} else {",
+                  "  const replicas = Object.keys(seen);",
+                  "  const missing = replicas.filter((r) => !seen[r]);",
+                  "  pm.test('the committed message is visible from every replica that answered (' + replicas.length + ')', function () {",
+                  "    pm.expect(missing, 'replicas that could not see it: ' + missing.join(', ')).to.be.empty;",
+                  "  });",
+                  "  pm.test('and the read was actually spread, not served by one replica', function () {",
+                  "    pm.expect(replicas.length).to.eql(EXPECTED);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Shared state \u00b7 unread agrees on every replica (loops)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/conversations?userId={{userId}}&limit=200",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "conversations"
+              ],
+              "query": [
+                {
+                  "key": "userId",
+                  "value": "{{userId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "200"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The unread dot began life as a browser variable, then a per-process one. Either way replicas",
+                  "// disagree; the watermark lives in MySQL so every replica has to give the same number.",
+                  "const ATTEMPTS = Number(pm.collectionVariables.get('replicaSweep')) || 12;",
+                  "const conversationId = Number(pm.collectionVariables.get('conversationId'));",
+                  "",
+                  "const answers = JSON.parse(pm.collectionVariables.get('unreadAnswers') || '{}');",
+                  "const instance = pm.response.headers.get('X-Relay-Instance') || 'unknown';",
+                  "if (pm.response.code === 200) {",
+                  "  const row = pm.response.json().conversations.filter((c) => c.id === conversationId)[0];",
+                  "  answers[instance] = row ? row.unreadCount : 'conversation missing';",
+                  "} else {",
+                  "  answers[instance] = 'status ' + pm.response.code;",
+                  "}",
+                  "pm.collectionVariables.set('unreadAnswers', JSON.stringify(answers));",
+                  "",
+                  "const n = Number(pm.collectionVariables.get('unreadCount') || 0) + 1;",
+                  "pm.collectionVariables.set('unreadCount', String(n));",
+                  "",
+                  "if (n < ATTEMPTS) {",
+                  "  pm.execution.setNextRequest('Shared state \u00b7 unread agrees on every replica (loops)');",
+                  "} else {",
+                  "  const replicas = Object.keys(answers);",
+                  "  const distinct = replicas.map((r) => JSON.stringify(answers[r])).filter((v, i, a) => a.indexOf(v) === i);",
+                  "  const detail = replicas.map((r) => r + '=' + answers[r]).join(' ');",
+                  "  pm.test('every replica reports the same unread count (' + detail + ')', function () {",
+                  "    pm.expect(distinct.length, 'distinct answers').to.eql(1);",
+                  "  });",
+                  "  pm.test('and that count is the one message sent by the other user', function () {",
+                  "    pm.expect(answers[replicas[0]]).to.eql(1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Shared state \u00b7 one send quota across replicas (loops)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conversationId\": {{conversationId}},\n  \"senderId\": {{userId}},\n  \"body\": \"burst\",\n  \"clientId\": \"{{burstClientId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Runs last in this folder: it deliberately exhausts the send quota for this conversation."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh clientId each time, or idempotency dedupes the burst into one message and nothing is",
+                  "// actually metered.",
+                  "pm.collectionVariables.set('burstClientId', 'burst-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The whole reason the limiter lives in Redis. Per-process counters would let roughly",
+                  "// limit x replicas through, and the proxy spreads this burst over every replica.",
+                  "const BURST = Number(pm.collectionVariables.get('burstSize')) || 8;",
+                  "const LIMIT = Number(pm.collectionVariables.get('sendLimit')) || 5;",
+                  "",
+                  "const statuses = JSON.parse(pm.collectionVariables.get('burstStatuses') || '[]');",
+                  "const servers = JSON.parse(pm.collectionVariables.get('burstServers') || '[]');",
+                  "statuses.push(pm.response.code);",
+                  "const instance = pm.response.headers.get('X-Relay-Instance');",
+                  "if (instance && servers.indexOf(instance) === -1) servers.push(instance);",
+                  "pm.collectionVariables.set('burstStatuses', JSON.stringify(statuses));",
+                  "pm.collectionVariables.set('burstServers', JSON.stringify(servers));",
+                  "",
+                  "if (pm.response.code === 429) {",
+                  "  pm.test('a throttled send says how long to wait', function () {",
+                  "    pm.expect(pm.response.headers.get('Retry-After'), 'Retry-After').to.be.a('string').and.not.empty;",
+                  "  });",
+                  "}",
+                  "",
+                  "const n = statuses.length;",
+                  "if (n < BURST) {",
+                  "  pm.execution.setNextRequest('Shared state \u00b7 one send quota across replicas (loops)');",
+                  "} else {",
+                  "  const accepted = statuses.filter((s) => s === 201).length;",
+                  "  const limited = statuses.filter((s) => s === 429).length;",
+                  "  const unexpected = statuses.filter((s) => s !== 201 && s !== 429);",
+                  "",
+                  "  pm.test('the burst only ever returned 201 or 429 (' + statuses.join(',') + ')', function () {",
+                  "    pm.expect(unexpected, 'unexpected statuses').to.be.empty;",
+                  "  });",
+                  "  pm.test('the limiter engaged', function () {",
+                  "    pm.expect(limited, 'throttled out of ' + BURST + ', spread over ' + servers.length + ' replica(s)').to.be.above(0);",
+                  "  });",
+                  "  pm.test('one quota was shared, not one per replica (' + accepted + ' accepted, limit ' + LIMIT + ', ' + servers.length + ' replicas)', function () {",
+                  "    pm.expect(accepted, 'accepted sends').to.be.at.most(LIMIT);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3 \u00b7 guards that must hold at any scale",
+      "description": "Regressions worth catching here because they are cheap to check and expensive to miss.",
+      "item": [
+        {
+          "name": "Authorization \u00b7 a read without userId is rejected",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/messages?conversationId={{conversationId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "conversationId",
+                  "value": "{{conversationId}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This returned the whole history until recently: the membership check was skipped when userId was",
+                  "// simply left off. See docs/08-review-fixes.md finding 2.",
+                  "pm.test('a read without userId is rejected, not served', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Authorization \u00b7 a non-participant is refused",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/messages?conversationId={{conversationId}}&userId={{strangerUserId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "conversationId",
+                  "value": "{{conversationId}}"
+                },
+                {
+                  "key": "userId",
+                  "value": "{{strangerUserId}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a non-participant is refused', function () {",
+                  "  pm.response.to.have.status(403);",
+                  "});",
+                  "pm.test('and the refusal is still attributable to a replica', function () {",
+                  "  pm.expect(pm.response.headers.get('X-Relay-Instance')).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Paging \u00b7 the inbox is bounded",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/conversations?userId={{userId}}&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "conversations"
+              ],
+              "query": [
+                {
+                  "key": "userId",
+                  "value": "{{userId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Unbounded, this is refetched on every reconnect. See docs/08-review-fixes.md finding 8.",
+                  "pm.test('the inbox is bounded and says there is more', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.conversations.length, 'page size').to.eql(1);",
+                  "  pm.expect(body.hasMore, 'hasMore').to.be.true;",
+                  "  pm.expect(body.nextCursor, 'nextCursor').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

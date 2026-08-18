@@ -162,6 +162,35 @@ Killing a replica does *not* bring it back, incidentally: `docker kill` counts a
 | `tests/scaling.test.mjs` | the properties worth failing a build over: every response attributable, and every replica agreeing about unread counts, committed messages, and send quota |
 | `scripts/probe-scaling.mjs` | the readable report — distribution, socket spread, cross-replica fan-out, typing, presence. Read-only and safe to run any time |
 | `scripts/probe-failover.mjs` | stops one replica at a time, hard and gracefully, and starts it again afterwards including on failure |
+| `postman/relay-scaling.postman_collection.json` | the same load-balancing questions as a Postman collection, for anyone who would rather click Run than read a script — see `postman/README.md` |
 
 The suite is 139 tests. The rate-limit-across-replicas check went in green, as a characterisation test:
 the limiter was already correct, and asserting it stays that way is the point.
+
+## The same checks in Postman
+
+`postman/relay-scaling.postman_collection.json`, runnable with `npm run test:postman`.
+
+Worth recording two things about it, because both are the sort of thing that makes a green run
+worthless:
+
+**The distribution assertion is load-bearing.** A collection that quietly ran against a single replica
+would pass every agreement check while proving nothing — there is nothing to disagree with. So it asserts
+it saw `expectedReplicas` distinct instances, and I checked the guard bites by scaling to one replica
+while telling it to expect three:
+
+```
+1. traffic reached all 3 expected replicas (saw 1: 2c94003120c8=60)
+2. and the read was actually spread, not served by one replica
+```
+
+Both agreement checks stayed green in that run, which is exactly the point.
+
+**It needs the Runner or Newman.** Several requests loop themselves with `pm.execution.setNextRequest`,
+which a single Send ignores — the loop never completes, the end-of-loop assertions never fire, and you
+get a green run that checked nothing.
+
+And the boundary: Postman's WebSocket requests can't run inside a collection or carry test scripts, so
+the collection covers the HTTP half only. The realtime fan-out — the actual substance of
+`tasks/multi-instance.md` — stays with `scripts/probe-scaling.mjs` and `tests/realtime.test.mjs`. A green
+Postman run is not "multi-instance works", and `postman/README.md` says so where someone will read it.

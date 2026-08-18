@@ -56,6 +56,7 @@ npm install
 npm test              # needs the stack up
 npm run typecheck
 npm run audit:tasks   # checks every requirement in tasks/ and prints the evidence
+npm run test:postman  # the load-balancing checks as a Postman collection, via Newman
 ```
 
 Worth running against `--scale api=3` as well — a single instance is exactly what hid the
@@ -117,6 +118,7 @@ Thanks — this was a good one to dig into. Everything below is in the repo as y
 | [`docs/07-structure.md`](docs/07-structure.md) | Express layering — controllers and middleware, and the plan decision I reversed |
 | [`docs/08-review-fixes.md`](docs/08-review-fixes.md) | a code review of the whole branch, the 12 findings, and the one mistake three of them share |
 | [`docs/09-scaling.md`](docs/09-scaling.md) | testing the load balancing at 3 and 5 replicas — including two bugs that only exist between the app and how it is launched |
+| [`postman/README.md`](postman/README.md) | the same load-balancing checks as a Postman collection, and what it deliberately cannot cover |
 
 ## The short version
 

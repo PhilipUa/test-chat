@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test --test-concurrency=1 \"tests/**/*.test.mjs\"",
     "probe:realtime": "node scripts/probe-realtime.mjs",
-    "audit:tasks": "node scripts/audit-tasks.mjs"
+    "audit:tasks": "node scripts/audit-tasks.mjs",
+    "test:postman": "npx --yes newman run postman/relay-scaling.postman_collection.json -e postman/relay-local.postman_environment.json --reporters cli"
   },
   "dependencies": {
     "express": "^4.19.2",
