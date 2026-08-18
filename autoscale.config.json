@@ -1,0 +1,41 @@
+{
+  "$comment": [
+    "Autoscaling rules for the api service. Used by `npm run autoscale`; every value can be overridden",
+    "on the command line (see scripts/autoscale.mjs --help).",
+    "",
+    "signal:  connections | cpu | memory",
+    "           connections  WebSocket connections held by a replica",
+    "           cpu          percent of ONE core, from the process's own cpuUsage()",
+    "           memory       resident set size in MB (absolute — a percentage needs a limit)",
+    "up/down: watermarks in that signal's units. Leave a wide gap between them, or the two touch and",
+    "         the scaler oscillates.",
+    "aggregate: mean (default) | max. `max` scales on the hottest replica, which is usually right for",
+    "         cpu — one saturated event loop is a real problem even when the mean looks calm.",
+    "proportional: whether the signal redistributes when a replica leaves. Used only by the anti-flap",
+    "         check. True for connections and cpu; false for memory, because a departing replica's",
+    "         baseline heap goes away with it rather than moving to its neighbours.",
+    "",
+    "Up if ANY rule wants up; down only if EVERY rule agrees — same as a Kubernetes HPA with several",
+    "metrics. The defaults below are deliberately low so the loop is observable on a demo stack; real",
+    "numbers would be in the thousands of connections."
+  ],
+
+  "min": 2,
+  "max": 6,
+  "intervalSeconds": 10,
+  "cooldownSeconds": 30,
+
+  "rules": [
+    { "signal": "connections", "up": 2, "down": 1, "aggregate": "mean" }
+  ],
+
+  "$examples": {
+    "cpu only": [{ "signal": "cpu", "up": 70, "down": 20, "aggregate": "max" }],
+    "memory only": [{ "signal": "memory", "up": 400, "down": 150, "proportional": false }],
+    "all three": [
+      { "signal": "connections", "up": 500, "down": 150 },
+      { "signal": "cpu", "up": 70, "down": 20, "aggregate": "max" },
+      { "signal": "memory", "up": 400, "down": 150, "proportional": false }
+    ]
+  }
+}

@@ -50,17 +50,23 @@ host-side, and honest about being a demonstration — see [`docs/09-scaling.md`]
 
 ```
 npm run autoscale -- --dry-run          # decide and log, change nothing
-npm run autoscale                       # min 2, max 6, scale on connections per replica
+npm run autoscale                       # rules from autoscale.config.json
+npm run autoscale -- --signal cpu --up 70 --down 20 --aggregate max
+npm run autoscale -- --signal memory --up 400 --down 150
 ```
+
+What it scales on is configuration: `connections`, `cpu` (percent of one core) or `memory` (MB resident),
+alone or combined, in [`autoscale.config.json`](autoscale.config.json). `/api/health` reports all three
+per replica.
 
 Realtime state is shared through Redis, so replicas are interchangeable. `curl localhost:9901/clusters`
 shows which replicas Envoy has discovered, and `/api/health` reports which one served you.
 
 ### Tests
 
-149 tests — 81 API-level, 17 in a real browser, 51 unit tests (the error-handling helpers, the
-WebSocket connection lifecycle, the process error policy, the autoscaling decision, and the browser
-helpers):
+173 tests — 81 API-level, 17 in a real browser, 75 unit tests (the error-handling helpers, the
+WebSocket connection lifecycle, the process error policy, the autoscaling rules, the process metrics, and
+the browser helpers):
 
 ```
 npm install

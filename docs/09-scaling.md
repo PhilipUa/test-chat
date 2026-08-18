@@ -259,9 +259,53 @@ nothing:
 The decision is a pure function in `autoscale-policy.mjs`, unit tested in `tests/autoscale.test.mjs`;
 the script around it samples, decides, and runs `compose up --scale`.
 
-The signal is **WebSocket connections per replica**, not CPU. For a chat app CPU is the wrong measure and
-would be wrong under a Kubernetes HPA too: an instance holding 10,000 idle sockets is near its limit and
-looks unloaded.
+What to scale on is **configuration**, not a decision baked into the code — `autoscale.config.json`, with
+CLI overrides. Three signals:
+
+| signal | units | why |
+|---|---|---|
+| `connections` | count | For a chat app this is usually what runs out first: each connection is a live socket, a place in the heartbeat sweep, and a share of the fan-out. The default. |
+| `cpu` | percent of **one** core | A Node process is effectively single-threaded, so 100% means the event loop is saturated. Against all 15 cores a pinned process reads ~7% and no sane watermark ever fires. |
+| `memory` | MB resident | Absolute, not a percentage. A percentage needs a limit, and no container memory limit is set here (`/sys/fs/cgroup/memory.max` is `max`), so the only available "limit" is the host's 8.3 GB — which would describe the host, not the process. |
+
+```json
+{ "min": 2, "max": 6, "cooldownSeconds": 30,
+  "rules": [
+    { "signal": "connections", "up": 500, "down": 150 },
+    { "signal": "cpu",         "up": 70,  "down": 20, "aggregate": "max" },
+    { "signal": "memory",      "up": 400, "down": 150, "proportional": false }
+  ] }
+```
+
+```
+node scripts/autoscale.mjs --signal cpu --up 70 --down 20 --aggregate max
+node scripts/autoscale.mjs --config my-rules.json
+```
+
+CPU is the conventional default and would be the wrong one here — an instance holding 10,000 idle sockets
+is near its limit and looks unloaded, which misleads a CPU-based HPA exactly as much as it would mislead
+this. Verified against real load: idle 2.6%, under a burst of expensive reads 24–37%, and
+`--signal cpu --up 25` decided `scale up: 3 → 4 — above the watermark on max cpu 36.9%`.
+
+Two config options exist because of specific mistakes they prevent:
+
+- **`aggregate: "max"`** — the mean hides a single saturated replica. Right for CPU, usually wrong for
+  connections.
+- **`proportional`** — used only by the anti-flap projection. Connections and CPU redistribute when a
+  replica leaves; memory does not, because a departing replica's baseline heap goes away with it. Projecting
+  memory would block scale-downs that are perfectly safe.
+
+Rules combine the way a Kubernetes HPA combines metrics: **up if any rule wants up, down only if every rule
+agrees.** Being over on one resource is enough to hurt; being under on one is not enough to be safe.
+
+Bad config fails at startup rather than on the first tick, because a scaler that exits immediately looks
+a lot like one that is running and deciding nothing:
+
+```
+autoscaling config is not usable (autoscale.config.json):
+  - unknown signal "diskio" — expected one of connections, cpu, memory
+  - cpu has down (50) at or above up (50) — leave a gap, or it will flap
+```
 
 The part worth testing is the anti-flap rule, which two watermarks don't give you on their own. Shedding
 a replica raises the load on the ones that remain; if that would push them over the *up* watermark, the
