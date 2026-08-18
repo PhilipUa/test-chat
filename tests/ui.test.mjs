@@ -303,6 +303,54 @@ describe('UI: loading races', () => {
 });
 
 describe('UI: realtime', () => {
+  it('moves a conversation to the top of the sidebar when a message arrives in it', async () => {
+    // The server orders the inbox by last activity, but only at fetch time. A message arriving over the
+    // socket updated the preview and the badge and left the row where it was, so the list drifted out
+    // of order until the next reload — most visibly for the conversation you are *not* looking at,
+    // which is exactly the one the ordering is there to surface.
+    const first = await freshConversation([1, 2], unique('ui-order-first'));
+    const second = await freshConversation([1, 2], unique('ui-order-second'));
+    await post('/api/messages', {
+      conversationId: first.id, senderId: 2, body: 'first activity', clientId: unique('f'),
+    });
+    await sleep(50);
+    await post('/api/messages', {
+      conversationId: second.id, senderId: 2, body: 'second activity', clientId: unique('s'),
+    });
+
+    const { ctx, page } = await openApp(1);
+    try {
+      await waitLive(page);
+
+      const topTitle = () =>
+        page.evaluate(
+          () =>
+            document.querySelector('#conversations li:not(.load-more) .conv-title')?.textContent ?? '',
+        );
+
+      // `second` had the most recent message, so the server put it on top.
+      assert.match(await topTitle(), new RegExp(second.title), 'unexpected starting order');
+
+      // Now `first` gets a newer message, delivered over the socket rather than by a refetch.
+      await post('/api/messages', {
+        conversationId: first.id, senderId: 2, body: 'newest of all', clientId: unique('n'),
+      });
+
+      await page.waitForFunction(
+        (title) =>
+          (
+            document.querySelector('#conversations li:not(.load-more) .conv-title')?.textContent ?? ''
+          ).includes(title),
+        first.title,
+        { timeout: 10_000 },
+      );
+
+      assert.match(await topTitle(), new RegExp(first.title));
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it("shows another user's message live, without a reload", async () => {
     const conv = await freshConversation([1, 2], unique('ui-live'));
     const { ctx, page } = await openApp(1);

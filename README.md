@@ -48,7 +48,7 @@ shows which replicas Envoy has discovered, and `/api/health` reports which one s
 
 ### Tests
 
-115 tests — 73 API-level, 15 in a real browser, 27 unit tests (the error-handling helpers, the
+126 tests — 74 API-level, 17 in a real browser, 35 unit tests (the error-handling helpers, the
 WebSocket connection lifecycle, the process error policy, and the browser helpers):
 
 ```

@@ -1,3 +1,5 @@
+import { isNewerMessage, orderByActivity } from './util.js';
+
 /**
  * The store — the one place client state is declared, and the only module that owns it.
  *
@@ -66,6 +68,35 @@ export function setUserId(userId) {
   const url = new URL(location.href);
   url.searchParams.set('userId', String(userId));
   history.replaceState(null, '', url);
+}
+
+/**
+ * Conversations in the order the inbox is meant to read: most recent activity first.
+ *
+ * Ordered on read rather than kept sorted, so no mutation path can forget to re-sort — the sidebar
+ * drifting out of order whenever a message arrived over the socket was exactly that omission.
+ */
+export function conversationsInOrder() {
+  return orderByActivity(state.conversations);
+}
+
+/**
+ * Records a message as its conversation's most recent, for the sidebar preview and the ordering.
+ *
+ * Returns whether anything changed, so a caller can skip a pointless re-render.
+ */
+export function noteLatestMessage(msg) {
+  const conv = conversationById(msg.conversationId ?? state.activeConversation);
+  if (!conv || !isNewerMessage(conv, msg)) return false;
+
+  conv.lastMessage = {
+    id: msg.id,
+    senderId: msg.senderId,
+    body: msg.body,
+    createdAt: msg.createdAt,
+  };
+  conv.activityAt = msg.createdAt;
+  return true;
 }
 
 export const el = (id) => document.getElementById(id);

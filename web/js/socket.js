@@ -1,5 +1,5 @@
 import { getMessages } from './api.js';
-import { el, state } from './state.js';
+import { conversationById, el, noteLatestMessage, state } from './state.js';
 import { onPresenceEvent, onPresenceSnapshot } from './features/presence.js';
 import { onTypingEvent, stopTyping } from './features/typing.js';
 import { appendMessage, markRead, openConversation } from './views/messages.js';
@@ -107,16 +107,12 @@ function handleEvent(event) {
 }
 
 function onMessageEvent(msg) {
-  const conv = state.conversations.find((c) => c.id === msg.conversationId);
-  if (conv) {
-    conv.messageCount += 1;
-    conv.lastMessage = {
-      id: msg.id,
-      senderId: msg.senderId,
-      body: msg.body,
-      createdAt: msg.createdAt,
-    };
-  }
+  const conv = conversationById(msg.conversationId);
+  // Counted here rather than in noteLatestMessage: that one is deliberately idempotent, and a count
+  // must move exactly once per message.
+  if (conv) conv.messageCount += 1;
+  // Also moves the conversation up the sidebar — renderSidebar orders on activity.
+  noteLatestMessage(msg);
 
   // Someone who just sent a message is no longer typing.
   stopTyping(msg.conversationId, msg.senderId);
@@ -133,7 +129,7 @@ function onMessageEvent(msg) {
 function onReadEvent(event) {
   // Another session of ours read this conversation — clear the badge here too.
   if (event.userId !== state.userId) return;
-  const conv = state.conversations.find((c) => c.id === event.conversationId);
+  const conv = conversationById(event.conversationId);
   if (conv) conv.unreadCount = 0;
   renderSidebar();
 }

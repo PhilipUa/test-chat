@@ -342,6 +342,28 @@ describe('unread state (survives a reload, unlike the old client-side dot)', () 
 });
 
 describe('conversation list', () => {
+  it('carries the activity timestamp it is ordered by, so a client can keep the order live', async () => {
+    // Without this the client cannot reproduce the server's ordering: `lastMessage.createdAt` covers
+    // conversations that have messages, but a conversation with none sorts by its own creation time
+    // and that was never exposed.
+    const quiet = await freshConversation([1, 2], unique('quiet-room'));
+    const busy = await freshConversation([1, 2], unique('busy-room'));
+    await post('/api/messages', {
+      conversationId: busy.id, senderId: 2, body: 'hello', clientId: unique('b'),
+    });
+
+    const list = await conversationsOf(1);
+    const quietRow = list.find((c) => c.id === quiet.id);
+    const busyRow = list.find((c) => c.id === busy.id);
+
+    assert.equal(typeof quietRow.activityAt, 'string', 'a conversation with no messages needs one too');
+    assert.equal(busyRow.activityAt, busyRow.lastMessage.createdAt);
+    assert.ok(
+      new Date(busyRow.activityAt) > new Date(quietRow.activityAt),
+      'activityAt must order the list the same way the server does',
+    );
+  });
+
   it('is ordered by recent activity and carries a preview of the last message', async () => {
     const older = await freshConversation([1, 2], unique('older-room'));
     const newer = await freshConversation([1, 2], unique('newer-room'));

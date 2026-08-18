@@ -56,3 +56,35 @@ export function maxOf(values) {
   for (const value of values) if (value > max) max = value;
   return max;
 }
+
+/**
+ * How recent a conversation is, for the inbox ordering.
+ *
+ * `activityAt` is the key the server sorts by — the last message's timestamp, or the conversation's
+ * own creation when it has none. Using the same key means a partially-loaded list stays consistent
+ * with the pages that haven't been fetched yet. The fallbacks only matter for a payload from an older
+ * server.
+ */
+const activityOf = (c) => new Date(c.activityAt ?? c.lastMessage?.createdAt ?? 0).getTime();
+
+/**
+ * Conversations most-recent-first, as a new array.
+ *
+ * The tie-break on id descending matches the server's, so conversations with no messages — which all
+ * share their creation second — don't shuffle between renders or disagree with the next page.
+ */
+export function orderByActivity(conversations) {
+  return [...conversations].sort((a, b) => activityOf(b) - activityOf(a) || b.id - a.id);
+}
+
+/**
+ * Whether `msg` is newer than what this conversation already has on record.
+ *
+ * The send path and the broadcast both report the same message, in either order — or only one of them
+ * does, when the socket is down. This makes recording it idempotent, and stops a delayed older message
+ * from dragging a conversation backwards down the sidebar.
+ */
+export function isNewerMessage(conversation, msg) {
+  if (msg.id === undefined) return true;
+  return msg.id > (conversation.lastMessage?.id ?? 0);
+}

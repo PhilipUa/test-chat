@@ -1,5 +1,5 @@
 import { createConversation, getConversations, getUsers, postMessage } from './api.js';
-import { el, setUserId, state } from './state.js';
+import { el, noteLatestMessage, setUserId, state } from './state.js';
 import { connectWs, setReloadConversations, subscribe } from './socket.js';
 import { cancelPendingStop, sendTyping, watchComposer } from './features/typing.js';
 import { appendMessage, buildMessage, openConversationOrNotice, resetPane, scrollToBottom, watchLoadOlder } from './views/messages.js';
@@ -103,6 +103,9 @@ el('composer').onsubmit = async (e) => {
     // Usually the broadcast has already swapped the bubble out; this covers the case where the
     // socket is down, so a send still renders correctly.
     if (state.pending.has(clientId)) appendMessage(saved);
+    // Same reason: with no socket there is no broadcast to move this conversation up the sidebar or
+    // refresh its preview. Idempotent, so it costs nothing when the broadcast did arrive.
+    if (noteLatestMessage(saved)) renderSidebar();
   } catch (err) {
     state.pending.delete(clientId);
     optimistic.remove();

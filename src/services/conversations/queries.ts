@@ -29,6 +29,15 @@ export interface ConversationSummary {
   unreadCount: number;
   lastReadMessageId: number;
   lastMessage: LastMessage | null;
+  /**
+   * The value this list is ordered by: the last message's timestamp, or the conversation's own
+   * creation when it has none.
+   *
+   * Exposed so the client can hold the order itself as messages arrive, instead of drifting out of
+   * order until the next fetch. `lastMessage.createdAt` isn't enough on its own — a conversation with
+   * no messages has no last message, and it still has a place in the ordering.
+   */
+  activityAt: string;
   /** Other participants, with live presence — lets the UI show who's around. */
   participants: Participant[];
 }
@@ -169,6 +178,7 @@ export async function listConversations(
           createdAt: new Date(r.lastCreatedAt!).toISOString(),
         }
       : null,
+    activityAt: new Date(r.activityAt).toISOString(),
     participants: participantsByConversation.get(Number(r.id)) ?? [],
   }));
 

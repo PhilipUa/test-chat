@@ -299,3 +299,38 @@ Two of the new tests were green before their change and are meant to stay that w
 every conversation (guards the pipelining in finding 7) and a message moving its conversation to the
 top of the inbox (guards dropping `last_message_at` in finding 11). Refactor guards, not bug
 reproductions — worth labelling as such rather than counting them as evidence the fixes work.
+
+---
+
+## Follow-up: keeping the inbox ordered live
+
+The server has always ordered the inbox by last activity — but only at fetch time. A message arriving
+over the socket updated the conversation's preview and its unread badge and left the row exactly where
+it was, so the list drifted out of order until the next reload or catch-up. Most visibly for the
+conversation you *aren't* looking at, which is the one the ordering exists to surface.
+
+Two parts:
+
+- **The server now returns the key it sorts by**, as `activityAt` on each conversation: the last
+  message's timestamp, or the conversation's own creation when it has none. `lastMessage.createdAt`
+  wasn't enough on its own — a conversation with no messages has no last message and still has a place
+  in the order. Sharing the key is what makes the client's order provably the same as the server's,
+  which matters now that the list is paged: a client sorting by its own rule would disagree with the
+  next page it fetches.
+- **The client orders on read**, not on write: `renderSidebar` iterates `conversationsInOrder()`
+  rather than `state.conversations`. Deliberately not "re-sort after each mutation" — the bug being
+  fixed *was* a mutation path that forgot, and there is no shortage of them (a broadcast, a send with
+  the socket down, a page append, a read receipt). Ordering on read means a new one can't forget.
+
+`noteLatestMessage` is idempotent, guarded on the message id. Both the send path and the broadcast
+report the same message, in either order, and when the socket is down only the send path does — so the
+guard is what lets both call it unconditionally. It also stops a delayed older broadcast from dragging
+a conversation backwards.
+
+The comparator and that guard live in `web/js/util.js` rather than `state.js`, because `state.js`
+touches `location` and `sessionStorage` at import and can't be loaded under node. Moving the two pure
+functions out gets them unit tests for the cases the browser test won't reach: the id tie-break that
+keeps message-less conversations from shuffling between renders, a double-report of one message, and a
+late older one.
+
+`npm test`: 126 tests.

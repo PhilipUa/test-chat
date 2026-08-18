@@ -1,4 +1,4 @@
-import { el, state, userName } from '../state.js';
+import { conversationsInOrder, el, state, userName } from '../state.js';
 import { onlineIn } from '../features/presence.js';
 import { typistsIn } from '../features/typing.js';
 
@@ -34,7 +34,7 @@ export function renderSidebar() {
     return;
   }
 
-  for (const c of state.conversations) list.appendChild(row(c));
+  for (const c of conversationsInOrder()) list.appendChild(row(c));
   if (state.hasMoreConversations) list.appendChild(loadMoreRow());
 }
 
