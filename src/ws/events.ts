@@ -53,6 +53,36 @@ export interface FanoutEnvelope {
 /** Written once, so the builder and the parser below can't drift apart. */
 const CHANNEL_PREFIX = 'relay:conv:';
 
+/**
+ * Whether an event should be delivered to a given subscriber.
+ *
+ * Tier 3.1 of the refactoring plan. `deliverLocally` grew one `if` per event type:
+ *
+ *   if (event.type === 'typing'   && event.userId === client.userId) continue;
+ *   if (event.type === 'presence' && event.userId === client.userId) continue;
+ *
+ * Both encode the same rule — don't tell someone about their own action — in the one place that has
+ * to be edited for every new event type. Event types are the axis this codebase has actually grown
+ * along (1 -> 6), so the rule belongs with the event definition instead.
+ *
+ * `message` is deliberately *not* self-suppressed: you do want your own message echoed back, since
+ * that's what confirms it and replaces the optimistic bubble.
+ */
+const SUPPRESS_OWN: Partial<Record<ConversationEvent['type'], true>> = {
+  typing: true,
+  presence: true,
+};
+
+/** The subject of an event, when it has one — used to decide self-suppression. */
+function subjectOf(event: ConversationEvent): number | undefined {
+  return 'userId' in event ? event.userId : undefined;
+}
+
+export function shouldDeliver(event: ConversationEvent, toUserId: number | undefined): boolean {
+  if (!SUPPRESS_OWN[event.type]) return true;
+  return subjectOf(event) !== toUserId;
+}
+
 export const channelFor = (conversationId: number): string => `${CHANNEL_PREFIX}${conversationId}`;
 
 export function conversationIdFromChannel(channel: string): number | undefined {
