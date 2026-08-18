@@ -65,7 +65,11 @@ for (let c = 0; c < CONVERSATIONS; c++) {
 
   const rows: unknown[][] = [];
   const docs: any[] = [];
-  const baseTime = Date.now() - (CONVERSATIONS - c) * 3_600_000;
+  // Space conversations by their own length, so the newest message always lands in the past.
+  // Fixed 1-hour spacing put messages in the future once a conversation held more than 60 of them
+  // (one per minute), which showed up as an inbox sorted by a timestamp that hadn't happened yet.
+  const spacingMs = PER_CONVERSATION * 60_000;
+  const baseTime = Date.now() - (CONVERSATIONS - c) * spacingMs;
 
   for (let m = 0; m < PER_CONVERSATION; m++) {
     const senderId = userIds[m % userIds.length]!;

@@ -40,7 +40,11 @@ export function connectWs() {
 
   ws.onopen = async () => {
     state.wsAttempts = 0;
-    setStatus('live', false);
+    // Deliberately not 'live' yet. An open socket receives nothing until the server has processed
+    // our subscribe frame, so reporting "live" here overstates it — and anything published in that
+    // gap is genuinely missed, since catch-up only runs on connect. 'live' is set when the server
+    // acknowledges the subscription instead.
+    setStatus('subscribing…', false);
     subscribe();
     // Catch up on anything published while we were away.
     await catchUp();
@@ -83,6 +87,10 @@ export function subscribe() {
 
 function handleEvent(event) {
   switch (event.type) {
+    case 'subscribed':
+      // The server is now routing this conversation's events to us; only now are we really live.
+      setStatus('live', false);
+      return;
     case 'message':
       return onMessageEvent(event);
     case 'typing':

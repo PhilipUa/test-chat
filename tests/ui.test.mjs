@@ -1,7 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { BASE, freshConversation, post, sleep, unique } from './helpers.mjs';
+import { BASE, freshConversation, post, seedMessages, sleep, unique } from './helpers.mjs';
 
 /**
  * Browser coverage for web/app.js.
@@ -192,6 +192,109 @@ describe('UI: sending', () => {
         await page.locator('#text').inputValue(),
         body,
         'the message must be put back in the composer, not lost',
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+describe('UI: loading races', () => {
+  it('keeps history above a message sent while the conversation is still loading', async () => {
+    // openConversation clears the pane and then awaits the fetch. Sending inside that window used to
+    // append the optimistic bubble first, so the history landed below it — wrong order until the next
+    // reload.
+    //
+    // The window is a few milliseconds locally, so an ordinary click-then-type never opens it: the
+    // first version of this test passed with the fix reverted, which makes it worthless. The history
+    // fetch is delayed deliberately here so the race is guaranteed rather than hoped for.
+    const conv = await freshConversation([1, 2, 3], unique('ui-race'));
+    await seedMessages(conv.id, 3);
+
+    const { ctx, page } = await openApp(1);
+    try {
+      await waitLive(page);
+
+      // Hold the *history* GET for a second; leave the send POST alone.
+      await page.route('**/api/messages?*', async (route) => {
+        if (route.request().method() === 'GET') await sleep(1000);
+        await route.continue();
+      });
+
+      await page.locator('#conversations li', { hasText: conv.title }).first().click();
+      // Well inside the delayed fetch.
+      await page.fill('#text', 'sent while loading');
+      await page.press('#text', 'Enter');
+
+      // Wait for the history to land on top of it.
+      await page.waitForFunction(
+        () => document.querySelectorAll('.msg').length >= 4,
+        undefined,
+        { timeout: 10_000 },
+      );
+      await sleep(1500);
+
+      const bodies = await page.evaluate(() =>
+        [...document.querySelectorAll('.msg .body')].map((n) => n.textContent),
+      );
+      assert.equal(
+        bodies[bodies.length - 1],
+        'sent while loading',
+        `the new message must be last, got order: ${JSON.stringify(bodies)}`,
+      );
+      assert.equal(
+        bodies.filter((b) => b === 'sent while loading').length,
+        1,
+        'and exactly once',
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('ignores a superseded load when conversations are switched quickly', async () => {
+    // The bodies have to be distinguishable per conversation, or the assertion can't tell whose
+    // history got painted — the first version of this test used identical seed bodies for both and
+    // therefore passed with the guard removed.
+    const a = await freshConversation([1, 2, 3], unique('ui-switch-a'));
+    const b = await freshConversation([1, 2, 3], unique('ui-switch-b'));
+    const aMarker = `alpha-${Date.now()}`;
+    const bMarker = `beta-${Date.now()}`;
+    await post('/api/messages', {
+      conversationId: a.id, senderId: 2, body: aMarker, clientId: unique('a'),
+    });
+    await post('/api/messages', {
+      conversationId: b.id, senderId: 2, body: bMarker, clientId: unique('b'),
+    });
+
+    const { ctx, page } = await openApp(1);
+    try {
+      await waitLive(page);
+
+      // Make the first open's fetch the slow one, so it resolves *after* the second and would paint
+      // conversation a's history into conversation b's pane if nothing guarded against it.
+      let firstGet = true;
+      await page.route('**/api/messages?*', async (route) => {
+        if (route.request().method() === 'GET' && firstGet) {
+          firstGet = false;
+          await sleep(1200);
+        }
+        await route.continue();
+      });
+
+      await page.locator('#conversations li', { hasText: a.title }).first().click();
+      await page.locator('#conversations li', { hasText: b.title }).first().click();
+      await sleep(2500);
+
+      assert.match(await page.locator('#title').textContent(), new RegExp(b.title));
+      const bodies = await page.evaluate(() =>
+        [...document.querySelectorAll('.msg .body')].map((n) => n.textContent),
+      );
+      assert.ok(bodies.includes(bMarker), `expected b's message, got ${JSON.stringify(bodies)}`);
+      assert.equal(
+        bodies.includes(aMarker),
+        false,
+        `the superseded load painted conversation a into b: ${JSON.stringify(bodies)}`,
       );
     } finally {
       await ctx.close();
