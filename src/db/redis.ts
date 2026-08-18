@@ -1,5 +1,6 @@
 import Redis, { type RedisOptions } from 'ioredis';
 import { config } from '../config.ts';
+import { logThrottled } from '../util/resilience.ts';
 
 /**
  * Redis was already declared in docker-compose and never used. It is now the shared state for
@@ -18,21 +19,11 @@ const baseOptions: RedisOptions = {
 
 function create(role: string): Redis {
   const client = new Redis(config.redisUrl, { ...baseOptions, connectionName: `relay-${role}` });
-  // Without an 'error' listener ioredis throws on connection errors, which would take the
-  // process down for something we are explicitly prepared to survive.
-  client.on('error', (err) => {
-    log(role, err);
-  });
+  // Without an 'error' listener ioredis throws on connection errors, which would take the process
+  // down for something we are explicitly prepared to survive. Connection errors arrive in floods
+  // while Redis is down, hence the throttled logger.
+  client.on('error', (err) => logThrottled(`redis:${role}`, err.message));
   return client;
-}
-
-let lastLoggedAt = 0;
-function log(role: string, err: Error): void {
-  // Connection errors arrive in floods while Redis is down; one line every 5s is enough.
-  const now = Date.now();
-  if (now - lastLoggedAt < 5_000) return;
-  lastLoggedAt = now;
-  console.error(`[redis:${role}] ${err.message}`);
 }
 
 /** Commands (rate limiting, publish). Never put this connection into subscriber mode. */

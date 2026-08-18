@@ -2,6 +2,7 @@ import { config } from '../config.ts';
 import { redis } from '../db/redis.ts';
 import { channelFor, shouldDeliver, type ConversationEvent, type FanoutEnvelope } from './events.ts';
 import * as registry from './registry.ts';
+import { bestEffort } from '../util/resilience.ts';
 
 /**
  * Fan-out: getting an event to every subscriber of a conversation, on any instance.
@@ -21,16 +22,14 @@ export async function publish(
   originConnectionId?: string,
 ): Promise<void> {
   const envelope: FanoutEnvelope = { event, origin: config.instanceId, originConnectionId };
-  try {
-    await redis.publish(channelFor(conversationId), JSON.stringify(envelope));
-  } catch (err) {
-    // Degrade to local-only rather than dropping the event: single-instance behaviour beats no
-    // realtime at all.
-    console.error(
-      `[ws] redis publish failed, degrading to local fan-out: ${(err as Error).message}`,
-    );
-    deliverLocally(conversationId, envelope);
-  }
+
+  const published = await bestEffort('ws:publish', () =>
+    redis.publish(channelFor(conversationId), JSON.stringify(envelope)),
+  );
+
+  // Degrade to local-only rather than dropping the event: single-instance behaviour beats no
+  // realtime at all.
+  if (!published) deliverLocally(conversationId, envelope);
 }
 
 /**

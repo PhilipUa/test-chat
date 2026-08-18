@@ -1,6 +1,7 @@
 import mysql from 'mysql2/promise';
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { config } from '../config.ts';
+import { bestEffort } from '../util/resilience.ts';
 
 export const pool = mysql.createPool({
   uri: config.mysqlUrl,
@@ -116,7 +117,8 @@ export async function withTransaction<T>(
     await conn.commit();
     return result;
   } catch (err) {
-    await conn.rollback().catch(() => {});
+    // Report the original failure, not a rollback failure — but don't hide the latter either.
+    await bestEffort('mysql:rollback', () => conn.rollback());
     throw err;
   } finally {
     conn.release();

@@ -7,6 +7,7 @@ import { conversationIdFromChannel, type FanoutEnvelope } from './events.ts';
 import { deliverLocally } from './fanout.ts';
 import { deregisterAll, handleDisconnect, handleFrame } from './protocol.ts';
 import * as registry from './registry.ts';
+import { parseJson } from '../util/resilience.ts';
 
 /**
  * WebSocket wiring.
@@ -75,12 +76,8 @@ export function attachWs(server: Server): void {
   redisSubscriber.on('message', (channel, payload) => {
     const conversationId = conversationIdFromChannel(channel);
     if (conversationId === undefined) return;
-    let envelope: FanoutEnvelope;
-    try {
-      envelope = JSON.parse(payload);
-    } catch {
-      return;
-    }
+    const envelope = parseJson<FanoutEnvelope>(payload);
+    if (!envelope) return;
     deliverLocally(conversationId, envelope);
   });
 }

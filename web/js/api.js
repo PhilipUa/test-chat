@@ -1,14 +1,12 @@
+import { parseJson } from './util.js';
+
 /** HTTP access. One error shape for the whole app, so callers can branch on status and retryAfter. */
 
 export async function api(path, options) {
   const res = await fetch(path, options);
   if (!res.ok) {
-    let payload = {};
-    try {
-      payload = await res.json();
-    } catch {
-      /* non-JSON error body */
-    }
+    // An error response isn't guaranteed to be JSON — a proxy 502 or 503 won't be.
+    const payload = parseJson(await res.text()) ?? {};
     const err = new Error(payload.error || `${res.status} ${res.statusText}`);
     err.status = res.status;
     err.retryAfter = Number(res.headers.get('Retry-After')) || payload.details?.retryAfterSeconds;

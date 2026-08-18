@@ -1,6 +1,7 @@
 import { config } from '../config.ts';
 import { messageBodies, tokenizeBody } from '../db/mongo.ts';
 import { queryOne, runWrite } from '../db/mysql.ts';
+import { bestEffort } from '../util/resilience.ts';
 import { sign } from './message-signing.ts';
 
 /**
@@ -102,10 +103,12 @@ export async function findBody(id: number): Promise<string> {
  * only affects sort order, so it must never fail a send that already succeeded.
  */
 export async function touchConversation(conversationId: number, at: Date): Promise<void> {
-  await runWrite('UPDATE conversations SET last_message_at = ? WHERE id = ?', [
-    at,
-    conversationId,
-  ]).catch(() => {});
+  // Derived data — the correct value is always recomputable from `messages` — so a failure must not
+  // fail a send that already succeeded. It is logged rather than swallowed: silently stale inbox
+  // ordering is the kind of thing nobody can explain later.
+  await bestEffort('messages:touch-conversation', () =>
+    runWrite('UPDATE conversations SET last_message_at = ? WHERE id = ?', [at, conversationId]),
+  );
 }
 
 export { SELECT_COLUMNS };

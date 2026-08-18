@@ -1,4 +1,5 @@
 import { redisSubscriber } from '../db/redis.ts';
+import { bestEffort } from '../util/resilience.ts';
 import { channelFor } from './events.ts';
 
 /**
@@ -16,9 +17,9 @@ export function acquire(conversationId: number): void {
   const next = (refs.get(conversationId) ?? 0) + 1;
   refs.set(conversationId, next);
   if (next === 1) {
-    redisSubscriber.subscribe(channelFor(conversationId)).catch((err) => {
-      console.error(`[ws] subscribe to conversation ${conversationId} failed: ${err.message}`);
-    });
+    void bestEffort(`ws:subscribe:${conversationId}`, () =>
+      redisSubscriber.subscribe(channelFor(conversationId)),
+    );
   }
 }
 
@@ -26,7 +27,10 @@ export function release(conversationId: number): void {
   const next = (refs.get(conversationId) ?? 1) - 1;
   if (next <= 0) {
     refs.delete(conversationId);
-    redisSubscriber.unsubscribe(channelFor(conversationId)).catch(() => {});
+    // Leaking a subscription is harmless (we filter by client subs anyway) but worth knowing about.
+    void bestEffort(`ws:unsubscribe:${conversationId}`, () =>
+      redisSubscriber.unsubscribe(channelFor(conversationId)),
+    );
   } else {
     refs.set(conversationId, next);
   }

@@ -48,7 +48,7 @@ shows which replicas Envoy has discovered, and `/api/health` reports which one s
 
 ### Tests
 
-70 tests against the running stack — 59 API-level plus 11 in a real browser:
+84 tests — 59 API-level, 13 in a real browser, 12 unit tests for the error-handling helpers:
 
 ```
 npm install

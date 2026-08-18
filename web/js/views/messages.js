@@ -3,6 +3,7 @@ import { conversationById, el, state, userName } from '../state.js';
 import { renderPresence } from '../features/presence.js';
 import { clearTyping, renderTyping } from '../features/typing.js';
 import { renderSidebar } from './sidebar.js';
+import { bestEffort } from '../util.js';
 
 /** The message pane: rendering, pagination, and read receipts. */
 
@@ -124,11 +125,9 @@ export async function markRead() {
   if (conv) conv.unreadCount = 0;
   renderSidebar();
   if (!latest) return;
-  try {
-    await postRead(id, state.userId, latest);
-  } catch {
-    // A failed read receipt is cosmetic; the badge will be right again after a refresh.
-  }
+  // Cosmetic if it fails — the badge is right again after a refresh — but worth a log line, since
+  // "the unread count is wrong" is otherwise unexplainable.
+  await bestEffort('read-receipt', () => postRead(id, state.userId, latest));
 }
 
 /** GET /api/messages is paginated, so older history is fetched on demand. */

@@ -1,6 +1,7 @@
 import { config } from '../config.ts';
 import { redis } from '../db/redis.ts';
 import { LUA_NOW_MS } from '../db/redis-time.ts';
+import { withFallback } from '../util/resilience.ts';
 
 /**
  * Rate limiting — tasks/rate-limiting.md
@@ -74,15 +75,23 @@ export interface RateLimitResult {
 
 let attemptCounter = 0;
 
-async function consume(
-  key: string,
-  limit: number,
-  windowMs: number,
-): Promise<RateLimitResult> {
+function consume(key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
   // Unique per attempt so two sends in the same millisecond both count. A ZADD with a duplicate
   // member would overwrite rather than add, silently granting a free send.
   const member = `${config.instanceId}:${process.hrtime.bigint()}:${attemptCounter++}`;
-  try {
+
+  // Fail *open*. A chat app that refuses to deliver messages because its rate limiter is down has
+  // turned a protection mechanism into an outage. `degraded: true` is what makes the route omit the
+  // rate-limit headers, so a client can tell the limiter wasn't authoritative.
+  const failOpen: RateLimitResult = {
+    allowed: true,
+    limit,
+    remaining: limit,
+    retryAfterMs: 0,
+    degraded: true,
+  };
+
+  return withFallback('rate-limit', failOpen, async () => {
     const [allowed, remaining, retryAfterMs] = (await redis.eval(
       SLIDING_WINDOW,
       1,
@@ -92,20 +101,8 @@ async function consume(
       member,
     )) as [number, number, number];
 
-    return {
-      allowed: allowed === ALLOW,
-      limit,
-      remaining,
-      retryAfterMs,
-      degraded: false,
-    };
-  } catch (err) {
-    // Fail open. A chat app that refuses to deliver messages because its rate limiter is down
-    // has turned a protection mechanism into an outage. Logged so it's visible, and the response
-    // carries no rate-limit headers so a client can tell the limiter isn't authoritative.
-    console.error(`[rate-limit] redis unavailable, allowing request: ${(err as Error).message}`);
-    return { allowed: true, limit, remaining: limit, retryAfterMs: 0, degraded: true };
-  }
+    return { allowed: allowed === ALLOW, limit, remaining, retryAfterMs, degraded: false };
+  });
 }
 
 /** Quota for sending a message: per user, per conversation. */

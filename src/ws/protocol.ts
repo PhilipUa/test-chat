@@ -10,6 +10,7 @@ import * as channels from './channels.ts';
 import { publish } from './fanout.ts';
 import * as registry from './registry.ts';
 import type { Client } from './registry.ts';
+import { parseJson } from '../util/resilience.ts';
 
 /**
  * The client-to-server protocol: parsing frames and handling each type.
@@ -19,12 +20,8 @@ import type { Client } from './registry.ts';
  */
 
 export async function handleFrame(client: Client, raw: string): Promise<void> {
-  let frame: unknown;
-  try {
-    frame = JSON.parse(raw);
-  } catch {
-    return; // malformed frames are ignored, as they always were
-  }
+  // Malformed frames are expected rather than exceptional on a public socket, and are ignored.
+  const frame = parseJson<unknown>(raw);
   if (!frame || typeof frame !== 'object') return;
 
   const message = frame as Record<string, unknown>;

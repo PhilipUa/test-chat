@@ -4,6 +4,7 @@ import { onPresenceEvent, onPresenceSnapshot } from './features/presence.js';
 import { onTypingEvent, stopTyping } from './features/typing.js';
 import { appendMessage, markRead, openConversation } from './views/messages.js';
 import { renderSidebar } from './views/sidebar.js';
+import { bestEffort, parseJson } from './util.js';
 
 /**
  * The realtime connection.
@@ -51,13 +52,8 @@ export function connectWs() {
   };
 
   ws.onmessage = (ev) => {
-    let event;
-    try {
-      event = JSON.parse(ev.data);
-    } catch {
-      return;
-    }
-    handleEvent(event);
+    const event = parseJson(ev.data);
+    if (event) handleEvent(event);
   };
 
   ws.onerror = () => setStatus('connection problem', true);
@@ -149,18 +145,18 @@ function onReadEvent(event) {
  * complete. Cheap enough to run on every reconnect and every resync nudge.
  */
 export async function catchUp() {
-  await reloadConversations().catch(() => {});
+  await bestEffort('catch-up:conversations', reloadConversations);
 
   const id = state.activeConversation;
   if (!id || state.viewingSearch) return;
 
   const since = state.lastSeen.get(id);
-  if (!since) {
-    await openConversation(id).catch(() => {});
+  if (since === undefined) {
+    await bestEffort('catch-up:open', () => openConversation(id));
     return;
   }
 
-  try {
+  const walked = await bestEffort('catch-up:since', async () => {
     let cursor = since;
     // `hasMore` means the gap was bigger than one page; keep walking forwards.
     for (let guard = 0; guard < 20; guard++) {
@@ -170,8 +166,9 @@ export async function catchUp() {
       if (!page.hasMore) break;
     }
     await markRead();
-  } catch {
-    // Falling back to a full reload of the conversation is always correct, just heavier.
-    await openConversation(id).catch(() => {});
-  }
+  });
+
+  // Reloading the whole conversation is always correct, just heavier — the fallback for when the
+  // cheap incremental path didn't work.
+  if (!walked) await bestEffort('catch-up:reload', () => openConversation(id));
 }

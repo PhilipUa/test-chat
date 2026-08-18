@@ -6,6 +6,7 @@ import { backfillBodyTokens, closeMongo, connectMongo, ensureMongoIndexes } from
 import { closeRedis, redis, waitForRedis } from './db/redis.ts';
 import { runMigrations } from './db/migrate.ts';
 import { errorHandler, installProcessErrorHandlers, notFoundHandler } from './http/errors.ts';
+import { withFallback } from './util/resilience.ts';
 import { conversationsRouter } from './routes/conversations.ts';
 import { messagesRouter } from './routes/messages.ts';
 import { searchRouter } from './routes/search.ts';
@@ -27,12 +28,10 @@ app.use(express.static('web'));
 const startedAt = new Date().toISOString();
 
 app.get('/api/health', async (_req, res) => {
-  let redisOk = true;
-  try {
+  const redisOk = await withFallback('health:redis', false, async () => {
     await redis.ping();
-  } catch {
-    redisOk = false;
-  }
+    return true;
+  });
   // `startedAt` is how a test can tell "this instance never restarted" from "the proxy sent me
   // to a different instance" — the two are indistinguishable from the instance id alone.
   res.json({ ok: true, redis: redisOk, startedAt, ...hubStats() });

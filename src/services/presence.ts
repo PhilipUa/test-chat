@@ -1,6 +1,7 @@
 import { config } from '../config.ts';
 import { redis } from '../db/redis.ts';
 import { LUA_NOW_MS, redisNowMs } from '../db/redis-time.ts';
+import { withFallback } from '../util/resilience.ts';
 
 /**
  * Who is currently online.
@@ -54,8 +55,10 @@ return redis.call('ZCARD', KEYS[1])
  * Registers (or refreshes) a connection.
  * @returns true when this connection brought the user online — i.e. they had none before.
  */
-export async function connectionOpened(userId: number, connectionId: string): Promise<boolean> {
-  try {
+export function connectionOpened(userId: number, connectionId: string): Promise<boolean> {
+  // false = "this didn't bring them online", so a failure announces nothing rather than announcing
+  // wrongly. Presence is decorative; it must never break a connection.
+  return withFallback('presence:open', false, async () => {
     const before = (await redis.eval(
       CONNECT,
       1,
@@ -64,11 +67,7 @@ export async function connectionOpened(userId: number, connectionId: string): Pr
       member(connectionId),
     )) as number;
     return Number(before) === 0;
-  } catch (err) {
-    // Presence is decorative; never let it break a connection.
-    console.error(`[presence] open failed for user ${userId}: ${(err as Error).message}`);
-    return false;
-  }
+  });
 }
 
 /** Refreshes an existing connection from the heartbeat. */
@@ -80,8 +79,10 @@ export async function connectionHeartbeat(userId: number, connectionId: string):
  * Deregisters a connection.
  * @returns true when this was the user's last one — i.e. they are now offline everywhere.
  */
-export async function connectionClosed(userId: number, connectionId: string): Promise<boolean> {
-  try {
+export function connectionClosed(userId: number, connectionId: string): Promise<boolean> {
+  // false = "they still have connections", so a failure leaves them online until the TTL expires
+  // rather than reporting a departure that may not have happened.
+  return withFallback('presence:close', false, async () => {
     const remaining = (await redis.eval(
       DISCONNECT,
       1,
@@ -90,17 +91,17 @@ export async function connectionClosed(userId: number, connectionId: string): Pr
       member(connectionId),
     )) as number;
     return Number(remaining) === 0;
-  } catch (err) {
-    console.error(`[presence] close failed for user ${userId}: ${(err as Error).message}`);
-    return false;
-  }
+  });
 }
 
 /** Filters the given user ids down to those with at least one live connection. */
-export async function onlineAmong(userIds: number[]): Promise<Set<number>> {
+export function onlineAmong(userIds: number[]): Promise<Set<number>> {
   const unique = [...new Set(userIds)];
-  if (!unique.length) return new Set();
-  try {
+  if (!unique.length) return Promise.resolve(new Set());
+
+  // Fall back to "everyone offline": an absent dot degrades better than a failed request, and it can
+  // never imply someone is present when we don't actually know.
+  return withFallback('presence:lookup', new Set<number>(), async () => {
     const now = await redisNowMs();
     const cutoff = now - config.presence.ttlMs;
 
@@ -114,12 +115,7 @@ export async function onlineAmong(userIds: number[]): Promise<Set<number>> {
       if (!err && Number(count) > 0) online.add(unique[i]!);
     });
     return online;
-  } catch (err) {
-    // Fail "everyone offline": an absent dot degrades better than a failed request, and it can
-    // never imply someone is present when we don't actually know.
-    console.error(`[presence] lookup failed: ${(err as Error).message}`);
-    return new Set();
-  }
+  });
 }
 
 const member = (connectionId: string) => `${config.instanceId}:${connectionId}`;
