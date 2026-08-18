@@ -121,18 +121,42 @@ export function hubStats() {
   };
 }
 
+/**
+ * Shuts the realtime side down, in the order that actually terminates.
+ *
+ * Each phase is timed, because this is on the critical path of every scale-down and redeploy and "the
+ * shutdown is slow" is otherwise unattributable.
+ */
 export async function closeWs(): Promise<void> {
   registry.stopHeartbeat();
 
   // Deregister presence before we go. Without this, a rolling deploy leaves every connected user
   // looking online for the whole presence TTL.
+  const deregisterStarted = Date.now();
   await deregisterAll(registry.all());
+  console.log(`[shutdown] presence deregistered in ${Date.now() - deregisterStarted}ms`);
 
+  // Ask politely first: 1001 is what tells a browser to reconnect elsewhere rather than treating this
+  // as an error. Then stop waiting — a close handshake needs the peer to reply, and ws will sit on an
+  // unanswered one for 30 seconds while its client set stays non-empty.
   registry.closeAll('server shutting down');
+  const graceStarted = Date.now();
+  for (let i = 0; i < 20 && registry.openCount() > 0; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const stillOpen = registry.openCount();
+  registry.terminateAll();
+  console.log(
+    `[shutdown] sockets closed in ${Date.now() - graceStarted}ms` +
+      (stillOpen ? ` (${stillOpen} terminated without replying)` : ''),
+  );
+
+  const serverStarted = Date.now();
   await new Promise<void>((resolve) => {
     if (!wss) return resolve();
     wss.close(() => resolve());
   });
+  console.log(`[shutdown] ws server closed in ${Date.now() - serverStarted}ms`);
 }
 
 // Routes publish through the hub, so keep the entry point here rather than making callers reach

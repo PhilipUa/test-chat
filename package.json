@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
+    "start": "node --import tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "seed": "tsx docker/db/seed.ts",
     "typecheck": "tsc --noEmit",

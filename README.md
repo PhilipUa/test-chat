@@ -48,7 +48,7 @@ shows which replicas Envoy has discovered, and `/api/health` reports which one s
 
 ### Tests
 
-126 tests — 74 API-level, 17 in a real browser, 35 unit tests (the error-handling helpers, the
+139 tests — 81 API-level, 17 in a real browser, 41 unit tests (the error-handling helpers, the
 WebSocket connection lifecycle, the process error policy, and the browser helpers):
 
 ```
@@ -67,6 +67,11 @@ Scripts for the specific problems in the original build:
 node scripts/probe-realtime.mjs               # does a message reach every connected client?
 docker compose exec api \
   node scripts/probe-ws-lifecycle.mjs         # does a socket that dies mid-subscribe leak channels?
+node scripts/probe-scaling.mjs                # is traffic really spread, and does the app still
+                                              # behave like one system? (read-only)
+node scripts/probe-failover.mjs               # what a connected user experiences when a replica
+                                              # goes away, hard and gracefully (stops one at a time,
+                                              # and starts it again afterwards)
 node scripts/bench-send.mjs 50                # what does a send burst do to read latency?
 node scripts/audit-tasks.mjs                  # every tasks/ requirement, with evidence
 docker compose exec api npx tsx scripts/generate-demo-data.ts 30 60
@@ -111,6 +116,7 @@ Thanks — this was a good one to dig into. Everything below is in the repo as y
 | [`docs/06-refactoring.md`](docs/06-refactoring.md) | executing it, the outcome against the plan's own targets, and what it found |
 | [`docs/07-structure.md`](docs/07-structure.md) | Express layering — controllers and middleware, and the plan decision I reversed |
 | [`docs/08-review-fixes.md`](docs/08-review-fixes.md) | a code review of the whole branch, the 12 findings, and the one mistake three of them share |
+| [`docs/09-scaling.md`](docs/09-scaling.md) | testing the load balancing at 3 and 5 replicas — including two bugs that only exist between the app and how it is launched |
 
 ## The short version
 

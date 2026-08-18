@@ -76,15 +76,48 @@ async function shutdown(server: http.Server, reason: string, code: number): Prom
   }, 10_000);
   forceExit.unref();
 
-  // WebSockets first, then the HTTP server.
-  //
-  // The other order deadlocks: server.close() only invokes its callback once every connection has
-  // ended, and an open WebSocket never ends on its own — so closing the sockets *inside* that
-  // callback meant the callback never fired, the force-exit timer killed the process ten seconds
-  // later, and none of the cleanup ran.
-  await closeWs();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  await Promise.allSettled([closeRedis(), closeMongo(), closeMysql()]);
+  // Timed per step, because "the shutdown is slow" is otherwise unattributable — and it was: this
+  // reliably hit the force-exit above, which meant everything after the hang was skipped.
+  await step('websockets closed', closeWs);
+  await step('http server closed', () => closeHttp(server));
+  await step('databases closed', async () => {
+    await Promise.allSettled([closeRedis(), closeMongo(), closeMysql()]);
+  });
+
   clearTimeout(forceExit);
+  console.log('[shutdown] complete');
   process.exit(code);
+}
+
+async function step(name: string, work: () => Promise<void>): Promise<void> {
+  const started = Date.now();
+  await work();
+  console.log(`[shutdown] ${name} in ${Date.now() - started}ms`);
+}
+
+/**
+ * Stops the HTTP server without waiting on connections that may never end on their own.
+ *
+ * `server.close()` only calls back once every connection has ended, and Envoy holds persistent
+ * upstream connections — so an idle keep-alive connection can keep the callback pending. Close the
+ * idle ones at once, give anything mid-request a moment, then take the rest.
+ *
+ * Worth being precise about what this did and didn't fix. The hang that made *every* drain hit the
+ * force-exit was elsewhere — an unanswered WebSocket close handshake in closeWs — and on a quiet stack
+ * this step measures 0ms either way. But it is not decorative: on a drain with traffic still arriving,
+ * `scripts/probe-failover.mjs` logged `http server closed in 3003ms`, i.e. the deadline below fired and
+ * bounded what would otherwise have run into the force-exit. Both halves earn their place.
+ */
+async function closeHttp(server: http.Server): Promise<void> {
+  const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+
+  server.closeIdleConnections();
+  const drainDeadline = setTimeout(() => {
+    console.warn('[shutdown] forcing remaining in-flight connections closed');
+    server.closeAllConnections();
+  }, 3_000);
+  drainDeadline.unref();
+
+  await closed;
+  clearTimeout(drainDeadline);
 }

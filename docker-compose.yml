@@ -15,7 +15,11 @@ services:
     build:
       context: .
       dockerfile: docker/app/Dockerfile
-    command: npm start
+    # node directly, not `npm start`. With npm as PID 1 the SIGTERM from a scale-down or a redeploy
+    # went to npm, which killed its child rather than letting it shut down — so none of the graceful
+    # shutdown in src/server.ts ran, and every user the replica was holding stayed "online" for the
+    # full presence TTL. `scripts/probe-failover.mjs` is the check.
+    command: node --import tsx src/index.ts
     restart: on-failure
     env_file: .env
     expose: ["3000"]

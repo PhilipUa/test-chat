@@ -227,6 +227,32 @@ describe('conversation create validation', () => {
   });
 });
 
+describe('the subscribe acknowledgement', () => {
+  it('means routing is in place, not that it is being arranged', async () => {
+    // `channels.acquire` fired its Redis SUBSCRIBE with `void` and the ack went out immediately after,
+    // so the server said "subscribed" while the subscriptions were still in flight. Anything published
+    // in that window was lost — and the client has no reason to suspect it, because the frontend sets
+    // its status to 'live' on exactly this ack.
+    //
+    // Subscribing to every conversation the user is in makes the window wide enough to see. With one
+    // or two conversations it is a couple of round trips and the race almost always resolves in time,
+    // which is why this hid behind an intermittently failing UI test rather than showing up here.
+    const conv = await freshConversation([1, 2], unique('ack-window'));
+    const client = await wsClient(1, []);
+
+    const marker = unique('published-right-after-ack');
+    const sent = await post('/api/messages', {
+      conversationId: conv.id, senderId: 2, body: marker, clientId: marker,
+    });
+    assert.equal(sent.status, 201);
+
+    const got = await client.waitFor((e) => e.type === 'message' && e.body === marker, 6_000);
+    assert.ok(got, 'a message published immediately after the ack never arrived');
+
+    await client.close();
+  });
+});
+
 describe('presence announce to many conversations', () => {
   it('reaches every conversation the user is in', async () => {
     // announcePresence is now one pipelined publish instead of a round trip per conversation; every

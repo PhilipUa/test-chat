@@ -111,10 +111,38 @@ export function stopHeartbeat(): void {
   heartbeat = undefined;
 }
 
+/**
+ * Asks every client to go away, politely: 1001 tells a browser to reconnect somewhere else.
+ *
+ * `ws.close()` starts a close *handshake*, so these sockets are not gone when this returns — see
+ * terminateAll, which is what stops the shutdown waiting on a peer that never replies.
+ */
 export function closeAll(reason: string): void {
   for (const client of clients) {
     client.closed = true;
     client.ws.close(1001, reason);
+  }
+}
+
+/** How many of the sockets we asked to leave are still open. */
+export function openCount(): number {
+  let open = 0;
+  for (const client of clients) if (client.ws.readyState !== WebSocket.CLOSED) open += 1;
+  return open;
+}
+
+/**
+ * Destroys whatever is left, and empties the set.
+ *
+ * WebSocketServer.close() only calls back once its client set is empty, and a half-finished close
+ * handshake keeps a socket in it — ws waits up to 30s for the peer's reply. So a shutdown that only
+ * asked nicely never completed: it sat here until the force-exit killed it, skipping every step after
+ * this one.
+ */
+export function terminateAll(): void {
+  for (const client of clients) {
+    client.closed = true;
+    client.ws.terminate();
   }
   clients.clear();
 }

@@ -88,3 +88,34 @@ export function isNewerMessage(conversation, msg) {
   if (msg.id === undefined) return true;
   return msg.id > (conversation.lastMessage?.id ?? 0);
 }
+
+/**
+ * Folds a freshly fetched inbox page into what we already hold.
+ *
+ * A refetch can be *older* than the socket. catchUp() reloads the inbox on every reconnect and every
+ * resync, and that request can already be in flight when a message arrives — so assigning the response
+ * straight over state.conversations threw the newer information away: the sidebar jumped back to its
+ * previous order and the preview reverted to the message before last. Same shape as the catchUp race in
+ * the message pane: a fetch resolving late and clobbering something newer.
+ *
+ * The page decides *which* conversations exist and in what order — that's the server's job, and paging
+ * depends on it. Merging only settles per-conversation freshness, and only for the fields the socket
+ * also maintains. `unreadCount` is deliberately taken from the page even when it is lower: reading a
+ * conversation lowers it, which is precisely when the server is right and our copy is stale.
+ */
+export function mergeConversations(existing, incoming) {
+  const held = new Map(existing.map((c) => [c.id, c]));
+
+  return incoming.map((fresh) => {
+    const mine = held.get(fresh.id);
+    if (!mine?.lastMessage || !isNewerMessage(fresh, mine.lastMessage)) return fresh;
+
+    return {
+      ...fresh,
+      lastMessage: mine.lastMessage,
+      activityAt: mine.activityAt ?? fresh.activityAt,
+      // Monotonic within a conversation, so the higher of the two is the true count.
+      messageCount: Math.max(fresh.messageCount ?? 0, mine.messageCount ?? 0),
+    };
+  });
+}

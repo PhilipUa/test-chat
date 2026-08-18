@@ -1,5 +1,6 @@
 import { createConversation, getConversations, getUsers, postMessage } from './api.js';
 import { el, noteLatestMessage, setUserId, state } from './state.js';
+import { mergeConversations } from './util.js';
 import { connectWs, setReloadConversations, subscribe } from './socket.js';
 import { cancelPendingStop, sendTyping, watchComposer } from './features/typing.js';
 import { appendMessage, buildMessage, openConversationOrNotice, resetPane, scrollToBottom, watchLoadOlder } from './views/messages.js';
@@ -42,7 +43,9 @@ async function loadUsers() {
  */
 async function loadConversations() {
   const page = await getConversations(state.userId);
-  state.conversations = page.conversations;
+  // Merged, not assigned: this runs on every catch-up, so the response can be older than what the
+  // socket has already told us. See mergeConversations.
+  state.conversations = mergeConversations(state.conversations, page.conversations);
   state.conversationsCursor = page.nextCursor;
   state.hasMoreConversations = page.hasMore;
   renderSidebar();
@@ -58,7 +61,13 @@ async function loadConversations() {
 async function loadMoreConversations() {
   if (!state.conversationsCursor) return;
   const page = await getConversations(state.userId, { cursor: state.conversationsCursor });
-  state.conversations = [...state.conversations, ...page.conversations];
+  // Pages are disjoint by construction, but a conversation that gained a message mid-paging can move
+  // and be returned twice — dedupe rather than render it in two places.
+  const known = new Set(state.conversations.map((c) => c.id));
+  state.conversations = [
+    ...state.conversations,
+    ...page.conversations.filter((c) => !known.has(c.id)),
+  ];
   state.conversationsCursor = page.nextCursor;
   state.hasMoreConversations = page.hasMore;
   renderSidebar();
