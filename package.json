@@ -11,10 +11,11 @@
     "test": "node --import tsx --test --test-concurrency=1 \"tests/**/*.test.mjs\"",
     "probe:realtime": "node scripts/probe-realtime.mjs",
     "audit:tasks": "node scripts/audit-tasks.mjs",
-    "test:postman": "npx --yes newman run postman/relay-scaling.postman_collection.json -e postman/relay-local.postman_environment.json --reporters cli",
+    "test:postman": "node scripts/test-postman-scaling.mjs",
     "probe:scaling": "node scripts/probe-scaling.mjs",
     "probe:transition": "node scripts/probe-scale-transition.mjs",
-    "autoscale": "node scripts/autoscale.mjs"
+    "autoscale": "node scripts/autoscale.mjs",
+    "test:postman:collection": "npx --yes newman run postman/relay-scaling.postman_collection.json -e postman/relay-local.postman_environment.json --reporters cli"
   },
   "dependencies": {
     "express": "^4.19.2",

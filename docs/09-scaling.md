@@ -179,15 +179,24 @@ worthless:
 
 **The distribution assertion is load-bearing.** A collection that quietly ran against a single replica
 would pass every agreement check while proving nothing — there is nothing to disagree with. So it asserts
-it saw `expectedReplicas` distinct instances, and I checked the guard bites by scaling to one replica
-while telling it to expect three:
+it saw `expectedReplicas` distinct instances.
+
+I first checked that guard by scaling to one replica and passing `--env-var expectedReplicas=3`. It
+failed, and I recorded it as proof. It was not proof: 3 is also the collection's default, so that run
+never demonstrated the override worked at all. It didn't — see below. Re-checked against a 3-replica
+stack told to expect 5, which is a value the collection does not default to:
 
 ```
-1. traffic reached all 3 expected replicas (saw 1: 2c94003120c8=60)
+1. traffic reached all 5 expected replicas (saw 3: …)
 2. and the read was actually spread, not served by one replica
 ```
 
-Both agreement checks stayed green in that run, which is exactly the point.
+**A variable-scope bug that made every phase run lie.** Configuration was read with
+`pm.collectionVariables.get`, which reads *only* the collection scope. `newman --env-var` sets
+environment variables, so nothing the driver passed in was ever visible: all three phases reported
+themselves as `"baseline"` with `expectedReplicas=3`. `pm.variables.get` resolves across scopes and is
+what configuration has to use; the accumulators stay on `pm.collectionVariables` because they are written
+back mid-run. Two of my own checks were weaker than I claimed because of it.
 
 **It needs the Runner or Newman.** Several requests loop themselves with `pm.execution.setNextRequest`,
 which a single Send ignores — the loop never completes, the end-of-loop assertions never fire, and you
@@ -278,3 +287,31 @@ One step per cooldown in both directions, stopping at the bounds, no oscillation
 reach that container. Not a trade worth making for a demo stack. In production the answer isn't this
 script: it's a Kubernetes HPA scaling a Deployment, where the scaling authority already exists and is
 scoped to it. What transfers is the signal and the anti-flap rule, not the plumbing.
+
+### `npm run test:postman` shows the autoscaling
+
+Postman cannot scale anything, so the collection is the verifier and `scripts/test-postman-scaling.mjs`
+is the driver: it opens sockets, runs `scripts/autoscale.mjs` a tick at a time until the count moves, and
+re-runs the collection per phase with the before/after counts injected.
+
+```
+PHASE 1 — baseline: 3 replica(s), as found
+  ✓  phase "baseline": 3 replica(s) serving, autoscaler reported 3
+
+PHASE 2 — scaled up by the autoscaler
+    scale up: 3 → 4 — above 2 per replica (18 connection(s) over 3 replica(s) = 6.0 each)
+  ✓  traffic reached all 4 expected replicas (saw 4: 7611…=15 ca86…=15 2c94…=15 2d72…=15)
+  ✓  every replica now serving is fully wired, not just answering HTTP
+  ✓  the autoscaler actually added a replica (3 -> 4)
+
+PHASE 3 — scaled down by the autoscaler
+    scale down: 4 → 3 — below 1 per replica (2 connection(s) over 4 replica(s) = 0.5 each)
+  ✓  the autoscaler actually removed a replica (4 -> 3)
+
+  3/3 phases passed — autoscaling verified end to end
+```
+
+The scaled-up phase asserts the count went *up*, not merely that the stack is consistent — so a run where
+autoscaling silently did nothing fails. `every replica now serving is fully wired` earns its place
+separately: a replica an autoscaler just started could answer `/api/health` while its Redis subscriber
+never came up, passing every distribution check and delivering no realtime at all.

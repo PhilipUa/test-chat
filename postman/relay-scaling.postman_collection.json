@@ -2,7 +2,7 @@
   "info": {
     "name": "Relay \u00b7 scaling and load balancing",
     "_postman_id": "b7e4b6a1-5c3f-4a92-9a1e-relay-scaling",
-    "description": "Load-balancing checks for Relay, over HTTP.\n\nThe question each folder asks:\n  1. Is the proxy actually spreading traffic across every replica?\n  2. Given that it is, does every replica give the SAME answer about shared state?\n\nBoth matter, and the second is meaningless without the first \u2014 a collection that quietly ran against one replica would pass every agreement check while proving nothing. So the distribution test asserts it saw `expectedReplicas` distinct instances, and fails if it did not.\n\nAttribution comes from the `X-Relay-Instance` response header.\n\nWHAT THIS DELIBERATELY DOES NOT COVER: the realtime side. The core of multi-instance is that a message published on one replica reaches WebSocket clients on the others, and Postman's WebSocket requests cannot run inside a collection or carry test scripts. `scripts/probe-scaling.mjs` and `tests/realtime.test.mjs` cover that half; this covers the HTTP half. Do not read a green run here as 'multi-instance works'.\n\nRun it in the Collection Runner or with Newman \u2014 several requests loop themselves via `postman.setNextRequest`, which a single Send ignores:\n\n  docker compose up -d --scale api=3\n  npm run test:postman\n\nSet `expectedReplicas` to match your scale.",
+    "description": "Load-balancing checks for Relay, over HTTP.\n\nThe question each folder asks:\n  1. Is the proxy actually spreading traffic across every replica?\n  2. Given that it is, does every replica give the SAME answer about shared state?\n\nBoth matter, and the second is meaningless without the first \u2014 a collection that quietly ran against one replica would pass every agreement check while proving nothing. So the distribution test asserts it saw `expectedReplicas` distinct instances, and fails if it did not.\n\nAttribution comes from the `X-Relay-Instance` response header.\n\nWHAT THIS DELIBERATELY DOES NOT COVER: the realtime side. The core of multi-instance is that a message published on one replica reaches WebSocket clients on the others, and Postman's WebSocket requests cannot run inside a collection or carry test scripts. `scripts/probe-scaling.mjs` and `tests/realtime.test.mjs` cover that half; this covers the HTTP half. Do not read a green run here as 'multi-instance works'.\n\nFolder 4 verifies what the autoscaler did; the scaling itself is driven by scripts/test-postman-scaling.mjs, because Postman has no shell.\n\nRun it in the Collection Runner or with Newman \u2014 several requests loop themselves via `postman.setNextRequest`, which a single Send ignores:\n\n  docker compose up -d --scale api=3\n  npm run test:postman\n\nSet `expectedReplicas` to match your scale.\n\nNOTE ON VARIABLES: configuration (`expectedReplicas`, `phase`, `samples`, \u2026) is read with `pm.variables.get`, not `pm.collectionVariables.get`. Only the former resolves across scopes, so an environment file or `newman --env-var` can override it. Reading configuration from the collection scope silently ignores every override \u2014 which is exactly the bug that made the phase runs all report themselves as 'baseline'. The accumulators stay on `pm.collectionVariables` because they are written back during the run.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -120,6 +120,26 @@
       "key": "writtenBy",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "phase",
+      "value": "baseline",
+      "type": "string"
+    },
+    {
+      "key": "previousReplicas",
+      "value": "3",
+      "type": "string"
+    },
+    {
+      "key": "autoscaleSeen",
+      "value": "{}",
+      "type": "string"
+    },
+    {
+      "key": "autoscaleCount",
+      "value": "0",
+      "type": "string"
     }
   ],
   "event": [
@@ -141,6 +161,8 @@
           "  pm.collectionVariables.set('unreadCount', '0');",
           "  pm.collectionVariables.set('burstStatuses', '[]');",
           "  pm.collectionVariables.set('burstServers', '[]');",
+          "  pm.collectionVariables.set('autoscaleSeen', '{}');",
+          "  pm.collectionVariables.set('autoscaleCount', '0');",
           "}"
         ]
       }
@@ -176,8 +198,8 @@
                 "exec": [
                   "// Accumulates across the loop and asserts once, on the final sample \u2014 so the run prints a",
                   "// handful of verdicts instead of one per request.",
-                  "const SAMPLES = Number(pm.collectionVariables.get('samples')) || 60;",
-                  "const EXPECTED = Number(pm.collectionVariables.get('expectedReplicas')) || 3;",
+                  "const SAMPLES = Number(pm.variables.get('samples')) || 60;",
+                  "const EXPECTED = Number(pm.variables.get('expectedReplicas')) || 3;",
                   "",
                   "const instance = pm.response.headers.get('X-Relay-Instance');",
                   "const hits = JSON.parse(pm.collectionVariables.get('replicaHits') || '{}');",
@@ -383,8 +405,8 @@
                 "exec": [
                   "// The write landed on one replica. Every replica must serve it immediately \u2014 the stores are shared,",
                   "// so 'I just wrote this and now it is missing' would mean the load balancer had exposed a split brain.",
-                  "const ATTEMPTS = Number(pm.collectionVariables.get('replicaSweep')) || 12;",
-                  "const EXPECTED = Number(pm.collectionVariables.get('expectedReplicas')) || 3;",
+                  "const ATTEMPTS = Number(pm.variables.get('replicaSweep')) || 12;",
+                  "const EXPECTED = Number(pm.variables.get('expectedReplicas')) || 3;",
                   "const marker = pm.collectionVariables.get('marker');",
                   "",
                   "const seen = JSON.parse(pm.collectionVariables.get('rywSeen') || '{}');",
@@ -447,7 +469,7 @@
                 "exec": [
                   "// The unread dot began life as a browser variable, then a per-process one. Either way replicas",
                   "// disagree; the watermark lives in MySQL so every replica has to give the same number.",
-                  "const ATTEMPTS = Number(pm.collectionVariables.get('replicaSweep')) || 12;",
+                  "const ATTEMPTS = Number(pm.variables.get('replicaSweep')) || 12;",
                   "const conversationId = Number(pm.collectionVariables.get('conversationId'));",
                   "",
                   "const answers = JSON.parse(pm.collectionVariables.get('unreadAnswers') || '{}');",
@@ -531,8 +553,8 @@
                 "exec": [
                   "// The whole reason the limiter lives in Redis. Per-process counters would let roughly",
                   "// limit x replicas through, and the proxy spreads this burst over every replica.",
-                  "const BURST = Number(pm.collectionVariables.get('burstSize')) || 8;",
-                  "const LIMIT = Number(pm.collectionVariables.get('sendLimit')) || 5;",
+                  "const BURST = Number(pm.variables.get('burstSize')) || 8;",
+                  "const LIMIT = Number(pm.variables.get('sendLimit')) || 5;",
                   "",
                   "const statuses = JSON.parse(pm.collectionVariables.get('burstStatuses') || '[]');",
                   "const servers = JSON.parse(pm.collectionVariables.get('burstServers') || '[]');",
@@ -698,6 +720,93 @@
                   "  pm.expect(body.hasMore, 'hasMore').to.be.true;",
                   "  pm.expect(body.nextCursor, 'nextCursor').to.be.a('string').and.not.empty;",
                   "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4 \u00b7 autoscaling",
+      "description": "Verifies the topology the autoscaler produced. Postman has no shell, so it cannot scale anything itself \u2014 `npm run test:postman` runs scripts/test-postman-scaling.mjs, which drives load, runs the real autoscaler, and re-runs this collection once per phase with `phase`, `previousReplicas` and `expectedReplicas` set. Running the collection on its own leaves phase at 'baseline' and simply checks the current stack.",
+      "item": [
+        {
+          "name": "Autoscaling \u00b7 confirm the replica count the autoscaler produced (loops)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            },
+            "description": "Samples until every replica has answered, then asserts on the set it found."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Postman cannot scale anything \u2014 it has no shell. So the scaling is driven by",
+                  "// scripts/test-postman-scaling.mjs, which runs the real autoscaler and then hands this run the",
+                  "// before/after counts. What Postman does here is the verification: the topology the autoscaler",
+                  "// claims to have produced is the topology actually serving traffic, and every replica it started is",
+                  "// fully wired rather than merely answering HTTP.",
+                  "const ATTEMPTS = Number(pm.variables.get('replicaSweep')) || 12;",
+                  "const phase = pm.variables.get('phase') || 'baseline';",
+                  "const previous = Number(pm.variables.get('previousReplicas'));",
+                  "const expected = Number(pm.variables.get('expectedReplicas'));",
+                  "",
+                  "const seen = JSON.parse(pm.collectionVariables.get('autoscaleSeen') || '{}');",
+                  "const instance = pm.response.headers.get('X-Relay-Instance');",
+                  "if (instance && pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  seen[instance] = { redis: body.redis === true, realtime: body.realtimeConnected === true };",
+                  "}",
+                  "pm.collectionVariables.set('autoscaleSeen', JSON.stringify(seen));",
+                  "",
+                  "const n = Number(pm.collectionVariables.get('autoscaleCount') || 0) + 1;",
+                  "pm.collectionVariables.set('autoscaleCount', String(n));",
+                  "",
+                  "if (n < ATTEMPTS) {",
+                  "  pm.execution.setNextRequest('Autoscaling \u00b7 confirm the replica count the autoscaler produced (loops)');",
+                  "} else {",
+                  "  const replicas = Object.keys(seen);",
+                  "  const live = replicas.length;",
+                  "",
+                  "  pm.test('phase \"' + phase + '\": ' + live + ' replica(s) serving, autoscaler reported ' + expected, function () {",
+                  "    pm.expect(live, 'replicas actually serving').to.eql(expected);",
+                  "  });",
+                  "",
+                  "  // A replica that answers /api/health but never got its Redis subscriber up would pass every",
+                  "  // distribution check and silently deliver no realtime \u2014 the exact failure an autoscaler makes",
+                  "  // likely, because it starts replicas without anyone watching.",
+                  "  const halfWired = replicas.filter((r) => !seen[r].redis || !seen[r].realtime);",
+                  "  pm.test('every replica now serving is fully wired, not just answering HTTP', function () {",
+                  "    pm.expect(halfWired, 'replicas with redis or realtime down: ' + halfWired.join(', ')).to.be.empty;",
+                  "  });",
+                  "",
+                  "  if (phase === 'scaled-up') {",
+                  "    pm.test('the autoscaler actually added a replica (' + previous + ' -> ' + live + ')', function () {",
+                  "      pm.expect(live, 'replicas after scaling up').to.be.above(previous);",
+                  "    });",
+                  "  } else if (phase === 'scaled-down') {",
+                  "    pm.test('the autoscaler actually removed a replica (' + previous + ' -> ' + live + ')', function () {",
+                  "      pm.expect(live, 'replicas after scaling down').to.be.below(previous);",
+                  "    });",
+                  "  } else {",
+                  "    pm.test('baseline: nothing has scaled yet', function () {",
+                  "      pm.expect(live).to.eql(previous);",
+                  "    });",
+                  "  }",
+                  "}"
                 ]
               }
             }
