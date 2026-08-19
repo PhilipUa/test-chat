@@ -10,16 +10,23 @@ import { Prisma, db } from '../db/mysql.ts';
 export async function createWithParticipants(
   title: string,
   participantIds: number[],
-): Promise<number> {
+): Promise<{ id: number; createdAt: Date }> {
   return db.$transaction(async (tx) => {
-    const created = await tx.conversation.create({ data: { title }, select: { id: true } });
+    // createdAt comes back from the row rather than being generated here: the column defaults to
+    // CURRENT_TIMESTAMP(0) precisely so the app clock can't put it in the future (see the schema),
+    // and it is the conversation's `activityAt` until its first message — the key the inbox is
+    // ordered by, which the realtime announcement has to agree with.
+    const created = await tx.conversation.create({
+      data: { title },
+      select: { id: true, createdAt: true },
+    });
     // One multi-row insert instead of a loop. skipDuplicates keeps a duplicate from being fatal
     // even if something upstream lets one through.
     await tx.conversationParticipant.createMany({
       data: participantIds.map((userId) => ({ conversationId: created.id, userId })),
       skipDuplicates: true,
     });
-    return created.id;
+    return { id: created.id, createdAt: created.createdAt ?? new Date() };
   });
 }
 

@@ -25,9 +25,17 @@ export async function userExists(userId: number): Promise<boolean> {
   return row !== null;
 }
 
-/** Which of `ids` exist — for validating participant lists in one query. */
-export async function existingUserIds(ids: number[]): Promise<Set<number>> {
-  if (!ids.length) return new Set();
-  const rows = await db.user.findMany({ where: { id: { in: ids } }, select: { id: true } });
-  return new Set(rows.map((r) => r.id));
+/**
+ * The names of whichever of `ids` exist, keyed by id.
+ *
+ * Doubles as the existence check for a participant list — a missing key is a missing user — so
+ * validating a new conversation and naming the people in it are one query rather than two.
+ */
+export async function namesByIds(ids: number[]): Promise<Map<number, string>> {
+  if (!ids.length) return new Map();
+  const rows = await db.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, name: true },
+  });
+  return new Map(rows.map((r) => [r.id, r.name]));
 }

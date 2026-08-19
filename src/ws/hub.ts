@@ -3,7 +3,7 @@ import { WebSocketServer } from 'ws';
 import { config } from '../config.ts';
 import { redisSubscriber } from '../db/redis.ts';
 import * as channels from './channels.ts';
-import { conversationIdFromChannel, type FanoutEnvelope } from './events.ts';
+import { targetOfChannel, type FanoutEnvelope } from './events.ts';
 import { deliverLocally } from './fanout.ts';
 import { deregisterAll, handleDisconnect, handleFrame, releaseClient } from './protocol.ts';
 import * as registry from './registry.ts';
@@ -16,11 +16,12 @@ import { parseJson } from '../util/resilience.ts';
  * dispatch, subscription authorization, typing, presence orchestration, refcounted Redis channels,
  * the heartbeat, and fan-out. It now owns only the wiring between them:
  *
- *   registry.ts   the client set, heartbeat, sending
- *   channels.ts   refcounted Redis subscribe/unsubscribe
- *   fanout.ts     publish + local delivery
- *   protocol.ts   what each client frame means
- *   hub.ts        this — attach, resync, shut down
+ *   registry.ts        the client set, heartbeat, sending
+ *   channels.ts        refcounted Redis subscribe/unsubscribe
+ *   subscriptions.ts   what each socket is subscribed to, and the channels that implies
+ *   fanout.ts          publish + local delivery
+ *   protocol.ts        what each client frame means
+ *   hub.ts             this — attach, resync, shut down
  */
 
 let wss: WebSocketServer | undefined;
@@ -81,11 +82,13 @@ export function attachWs(server: Server): void {
   watchSubscriberHealth();
 
   redisSubscriber.on('message', (channel, payload) => {
-    const conversationId = conversationIdFromChannel(channel);
-    if (conversationId === undefined) return;
+    // The channel name carries the routing rule — a conversation's subscribers, or one user's own
+    // sockets. Anything we don't recognise is not ours to deliver.
+    const target = targetOfChannel(channel);
+    if (!target) return;
     const envelope = parseJson<FanoutEnvelope>(payload);
     if (!envelope) return;
-    deliverLocally(conversationId, envelope);
+    deliverLocally(target, envelope);
   });
 }
 
@@ -175,4 +178,4 @@ export async function closeWs(): Promise<void> {
 
 // Routes publish through the hub, so keep the entry point here rather than making callers reach
 // into ws/fanout.ts directly.
-export { publish } from './fanout.ts';
+export { publish, publishToUsers } from './fanout.ts';
