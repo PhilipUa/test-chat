@@ -29,6 +29,113 @@ docker compose up --build
 
 Then open <http://localhost:3000>. It seeds a couple of demo users and conversations on first boot.
 
+To try the two-person features (typing indicator, unread badges), open a second tab pinned to a
+different user — identity is per-tab:
+
+```
+http://localhost:3000/?userId=1     # Alice
+http://localhost:3000/?userId=2     # Bob
+```
+
+### Running several instances
+
+```
+docker compose up -d --scale api=3
+```
+
+Scaling is manual — Compose has no autoscaler, and `--scale` is a number you type. What *is* automatic
+is discovery: Envoy re-resolves the `api` hostname every 5s, so a new replica takes traffic about 6s
+after it starts, with no proxy restart. `npm run autoscale` adds the missing control loop (load-driven,
+host-side, and honest about being a demonstration — see [`docs/09-scaling.md`](docs/09-scaling.md)):
+
+```
+npm run autoscale -- --dry-run          # decide and log, change nothing
+npm run autoscale                       # rules from autoscale.config.json
+npm run autoscale -- --signal cpu --up 70 --down 20 --aggregate max
+npm run autoscale -- --signal memory --up 400 --down 150
+```
+
+What it scales on is configuration: `connections`, `cpu` (percent of one core), `memory` (MB resident) or
+`rpm` (requests per minute), alone or combined, in [`autoscale.config.json`](autoscale.config.json).
+`/api/health` reports all four per replica.
+
+Realtime state is shared through Redis, so replicas are interchangeable. `curl localhost:9901/clusters`
+shows which replicas Envoy has discovered, and `/api/health` reports which one served you.
+
+### Rate limits
+
+Five metered buckets, all one mechanism — an atomic sliding window in Redis, so a limit holds across
+replicas. Defaults live in code ([`src/config/rate-limit-rules.ts`](src/config/rate-limit-rules.ts));
+env vars (`RATE_LIMIT_MAX` and friends, see `.env.example`) override per deployment:
+
+| bucket | endpoint | keyed by | default |
+|---|---|---|---|
+| `send` | `POST /api/messages` | user + conversation | 5 / 10s |
+| `search` | `GET /api/search` | user | 20 / 10s |
+| `reads` | `GET /api/messages`, `GET /api/conversations` | user | 100 / 10s |
+| `create` | `POST /api/conversations` | user | 60 / 60s |
+| `typing` | WebSocket `typing` frames | user + conversation | 10 / 10s |
+
+Going over returns `429` with `Retry-After` (typing frames are dropped — there is no response to
+carry a header on). Deliberately unmetered: `/api/health`, because the autoscaler polls it to find
+replicas; `/api/users`, a fixed-size lookup with no caller-controlled cost; and typing *stop* frames,
+so a throttled client can't leave someone stuck as "typing".
+
+The file is bind-mounted, so retuning a limit is an edit plus `docker compose restart api` rather
+than a rebuild. Which buckets exist and how each is keyed stays in code — a key shape is a decision
+about what the limit protects — and the file sets the numbers. `RATE_LIMIT_MAX` and friends still
+work and still win over the file; a malformed or invalid file fails startup rather than quietly
+running numbers nobody chose.
+
+### Tests
+
+204 tests — 83 API-level, 17 in a real browser, 104 unit tests (the error-handling helpers, the
+WebSocket connection lifecycle, the process error policy, the autoscaling rules, the rate-limit rule
+loader, the process metrics, and the browser helpers):
+
+```
+npm install
+npm test              # needs the stack up. Includes the browser-driven UI tests
+npm run test:ci       # the same suite without them — what CI runs, no browser needed
+npm run typecheck
+npm run audit:tasks   # checks every requirement in tasks/ and prints the evidence
+npm run verify        # typecheck + suite + task audit + every probe, in one command
+npm run probe:signals # the autoscaler driven by each of connections, cpu and rpm
+npm run test:postman  # drives the autoscaler and verifies each phase with the Postman collection
+                      #   -- --signal cpu   drive CPU up instead of connections
+                      #   -- --signal rpm   drive request rate up instead
+npm run test:postman:collection   # just the collection, against the stack as it is
+```
+
+Worth running against `--scale api=3` as well — a single instance is exactly what hid the
+multi-instance fan-out bug in the first place.
+
+Scripts for the specific problems in the original build:
+
+```
+node scripts/probe-realtime.mjs               # does a message reach every connected client?
+docker compose exec api \
+  node scripts/probe-ws-lifecycle.mjs         # does a socket that dies mid-subscribe leak channels?
+node scripts/probe-scaling.mjs                # is traffic really spread, and does the app still
+                                              # behave like one system? (read-only)
+node scripts/probe-scale-transition.mjs       # does changing the replica count 3->5->3 drop a request
+                                              # or a connected client? (restores the count it found)
+node scripts/probe-failover.mjs               # what a connected user experiences when a replica
+                                              # goes away, hard and gracefully (stops one at a time,
+                                              # and starts it again afterwards)
+node scripts/probe-redis-outage.mjs           # what survives losing Redis, and what recovers after
+                                              # (stops the redis container, starts it again)
+node scripts/probe-soak.mjs --minutes 3       # churn for a while, then check nothing leaked
+node scripts/bench-send.mjs 50                # what does a send burst do to read latency?
+node scripts/audit-tasks.mjs                  # every tasks/ requirement, with evidence
+docker compose exec api npx tsx scripts/generate-demo-data.ts 30 60
+                                              # bulk demo messages, for looking at search
+```
+
+A note on rebuilding: only source directories are bind-mounted, so `node_modules` is the one in the
+image. Adding a dependency needs `docker compose up --build`. `docker compose down -v` resets all
+data to the seeded demo state.
+
 ## Ground rules
 
 - **Work in your own copy.** Clone this repo, push it to a fresh repo of your own, and send us the
@@ -42,3 +149,104 @@ Then open <http://localhost:3000>. It seeds a couple of demo users and conversat
 - Use whatever tools and setup you normally work with.
 - Send us **just the link to your repo**, plus a short note on what you changed and why — what was
   broken, what you fixed, what you built.
+
+
+---
+
+# Notes from me (Filip)
+
+Thanks — this was a good one to dig into. Everything below is in the repo as you asked.
+
+**Where things are:**
+
+| | |
+|---|---|
+| [`docs/01-investigation.md`](docs/01-investigation.md) | the 13 bugs I found, each reproduced with the command that shows it |
+| [`spec/plan.md`](spec/plan.md) | how I sequenced the work, and why in that order |
+| [`docs/03-changes.md`](docs/03-changes.md) | what I changed and why, with before/after numbers |
+| [`docs/04-tradeoffs.md`](docs/04-tradeoffs.md) | what I deliberately *didn't* do, and the reasoning |
+| [`docs/05-hardening.md`](docs/05-hardening.md) | a second pass closing the gaps the first one left, including bugs I introduced myself |
+| [`spec/refactoring-plan.md`](spec/refactoring-plan.md) | the SOLID/KISS/DRY plan — including what I deliberately would not do |
+| [`docs/06-refactoring.md`](docs/06-refactoring.md) | executing it, the outcome against the plan's own targets, and what it found |
+| [`docs/07-structure.md`](docs/07-structure.md) | Express layering — controllers and middleware, and the plan decision I reversed |
+| [`docs/08-review-fixes.md`](docs/08-review-fixes.md) | a code review of the whole branch, the 12 findings, and the one mistake three of them share |
+| [`docs/09-scaling.md`](docs/09-scaling.md) | testing the load balancing at 3 and 5 replicas — including two bugs that only exist between the app and how it is launched |
+| [`postman/README.md`](postman/README.md) | the Postman collection: verifying an autoscaled stack, and what Postman deliberately cannot do |
+
+## The short version
+
+**Two bugs stood out**, because they weren't really about correctness:
+
+*One bad request killed the whole server.* The async route handlers had no error handling, and
+Express 4 doesn't catch a rejected promise from an `async` handler — so an unhandled rejection
+terminated the process. A duplicate participant id in a request body was enough to restart the API
+and drop every WebSocket on it. Any unauthenticated caller could do it at will.
+
+*Every message send blocked the event loop for 20ms.* `createMessage` signed each body with
+`pbkdf2Sync` at 200,000 iterations. That's a password-stretching KDF used synchronously on the main
+thread, so the cost landed on everyone: an idle 4ms read became a 790ms read during a send burst.
+It was also keyless with a hard-coded salt, so it provided no authenticity for its 20ms. A keyed
+HMAC does the actual job 14,000x faster.
+
+**And the one you predicted.** Realtime didn't survive `--scale api=3` — the hub kept its client
+set in process memory, so a broadcast only reached sockets on the instance that handled the POST.
+2 of 6 clients got the message. What makes it nasty is the failure mode: no error anywhere, the
+sender's own tab usually works fine, messages just quietly don't arrive for other people.
+
+The rest, briefly: retried sends duplicated messages (`client_id` existed but nothing read it);
+re-running the seed silently blanked every message body you'd ever sent (64 of 66, on every
+restart); nobody checked whether you were actually in a conversation before letting you post to it
+or subscribe to it; `messages` had no index on `conversation_id`; the conversation list ran 2N+1
+queries; `GET /api/messages` returned the entire conversation history; the WebSockets had no error
+handler, no heartbeat and no client reconnect; and conversation titles went through `innerHTML`.
+
+**Built all four tasks** — multi-instance realtime (Redis pub/sub, refcounted per conversation),
+rate limiting (atomic sliding window in Lua, `429` + `Retry-After`, per user per conversation,
+fails open, rules in a config file), search (Mongo `$text` ranked, scoped to your own conversations, with a bounded
+substring fallback for partial words), and the typing indicator (over the same Redis path, so it
+works multi-instance too).
+
+**Two things I'd flag as my judgement calls rather than requirements:** the rate limiter fails
+*open* if Redis is down, because a chat app that stops delivering messages when its limiter breaks
+has turned a safeguard into an outage — I'd invert that for anything money-related. And I added
+server-side unread state, which is scope I chose: the dot was a browser variable that vanished on
+reload, and `tasks/multi-instance.md` asks for it to keep working across instances, which isn't
+possible client-side.
+
+**What I'd do next, in order:** real authentication (I added authorization, but it's over a claimed
+identity, which only stops accidents); close the last gap in the two-store write, or question why
+the body and the id live in different databases at all; and move search off `$text` when volume
+justifies it. All three are written up in `docs/04-tradeoffs.md`.
+
+I also added a test suite (59 tests, against the real stack — the multi-instance bug is only
+visible that way) and scripts that reproduce the original problems, so the before/after numbers in
+`docs/03-changes.md` are re-runnable rather than just claimed. `npm run audit:tasks` checks each
+requirement in `tasks/` one at a time and prints the evidence.
+
+## A second pass
+
+After the above I went back over my own work and found that the first pass had left real gaps —
+written up in [`docs/05-hardening.md`](docs/05-hardening.md). The one that mattered:
+
+**I'd only rate-limited sending, and search was the expensive endpoint.** Worse, the substring
+fallback I'd added to make partial-word search work was examining every message in the caller's
+history to return nothing — so `?q=zzzz1`, `?q=zzzz2`, … was an unmetered way to generate unbounded
+read load. Fixed on both sides: search is metered, and the fallback is now an anchored prefix match
+against an index, which took `docsExamined` from 3203 to 0 on a query that matches nothing.
+
+Search now runs three strategies, most precise first: `$text` for whole words, an anchored prefix
+scan for partial ones, and a trigram-backed **fuzzy** pass for misspellings — the case where the
+first two return nothing at all, since `$text` matches whole words and a prefix cannot survive a
+typo in the first character. Each stays index-backed; see
+[`docs/03-changes.md`](docs/03-changes.md#search-three-strategies-most-precise-first) for the
+measurements, including why the fuzzy query carries an explicit index hint.
+
+Also: a realtime gap the client could never detect (Redis pub/sub is at-most-once, and the
+WebSocket stays open through a Redis outage, so the browser silently stopped receiving — now the
+server sends a resync nudge and `?since=` fetches exactly the gap); typing surfaced in the sidebar
+so you can tell someone's replying in another thread; and presence, which took two attempts to get
+right.
+
+Four of the bugs in that document are ones I introduced myself, including a graceful shutdown that
+never actually ran because it waited on `server.close()`, whose callback can't fire while a
+WebSocket is open. They're listed as mine.

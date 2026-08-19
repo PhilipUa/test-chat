@@ -1,0 +1,65 @@
+# Two jobs, split by what they need:
+#
+#   static       typecheck + lint + formatting + the pure unit tests — fast, no services.
+#   integration  the full suite against the real compose stack (Envoy, 1 api, MySQL, Mongo, Redis),
+#                because most of tests/ asserts against live HTTP and WebSockets.
+#
+# The probe scripts (probe:*, test:postman) are NOT run here: they scale the stack up and down and
+# take tens of minutes; they stay part of `npm run verify` for a workstation with Docker.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch makes the run in flight irrelevant. Without this they queue up and
+# compete for runners, so the result you actually care about arrives last.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run prisma:generate
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: node --import tsx --test tests/rate-limit-config.test.mjs tests/process-metrics.test.mjs tests/web-util.test.mjs
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The containers generate their own clients at image build. This is for the *host*: parts of
+      # the suite import app source directly (tests/ws-lifecycle.test.mjs reaches src/ws, which
+      # pulls in src/db), and those imports need a client on the runner too.
+      - run: npm run prisma:generate
+      - run: cp .env.example .env
+      - run: docker compose up -d --wait
+        timeout-minutes: 10
+      # `test:ci`, not `test`: the browser-driven tests (tests/ui*.test.mjs) are a local check. They
+      # need a Playwright browser, and installing one here cost several minutes of apt and download
+      # on every run — most of this job's wall clock — to re-run assertions a developer already
+      # makes locally with `npm test`. Everything else, including the whole HTTP and WebSocket
+      # surface, still runs here against the real stack.
+      - run: npm run test:ci
+        timeout-minutes: 20
+      - name: stack logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+      - if: always()
+        run: docker compose down -v

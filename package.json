@@ -4,20 +4,49 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
+    "start": "node --import tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "seed": "tsx docker/db/seed.ts"
+    "seed": "tsx docker/db/seed.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "node --import tsx --test --test-concurrency=1 \"tests/**/*.test.mjs\"",
+    "test:ci": "node --import tsx --test --test-concurrency=1 \"tests/!(ui*).test.mjs\"",
+    "probe:realtime": "node scripts/probe-realtime.mjs",
+    "audit:tasks": "node scripts/audit-tasks.mjs",
+    "test:postman": "node scripts/test-postman-scaling.mjs",
+    "probe:scaling": "node scripts/probe-scaling.mjs",
+    "probe:transition": "node scripts/probe-scale-transition.mjs",
+    "autoscale": "node scripts/autoscale.mjs",
+    "test:postman:collection": "npx --yes newman run postman/relay-scaling.postman_collection.json -e postman/relay-local.postman_environment.json --reporters cli",
+    "probe:redis": "node scripts/probe-redis-outage.mjs",
+    "probe:soak": "node scripts/probe-soak.mjs",
+    "probe:failover": "node scripts/probe-failover.mjs",
+    "probe:signals": "node scripts/test-postman-scaling.mjs --signal connections && node scripts/test-postman-scaling.mjs --signal cpu && node scripts/test-postman-scaling.mjs --signal rpm",
+    "verify": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run audit:tasks && npm run probe:scaling && npm run probe:transition && npm run probe:failover && npm run probe:redis && npm run probe:soak",
+    "prisma:generate": "prisma generate --schema prisma/mysql/schema.prisma && prisma generate --schema prisma/mongo/schema.prisma"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.3",
     "express": "^4.19.2",
-    "mongodb": "^6.8.0",
-    "mysql2": "^3.11.3",
-    "ws": "^8.18.0"
+    "ioredis": "^5.4.1",
+    "ws": "^8.18.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/express": "^4.17.21",
+    "@types/node": "^22.7.4",
     "@types/ws": "^8.5.12",
+    "eslint": "^10.8.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.11.0",
+    "playwright": "^1.62.1",
+    "prettier": "^3.9.6",
+    "prisma": "^6.19.3",
     "tsx": "^4.19.1",
-    "typescript": "^5.6.2"
+    "typescript": "^5.6.2",
+    "typescript-eslint": "^8.67.0"
   }
 }
