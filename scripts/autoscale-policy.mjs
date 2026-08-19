@@ -90,6 +90,34 @@ export function validateRules(rules) {
 }
 
 /**
+ * Checks the replica bounds, returning the problems as readable strings.
+ *
+ * Separate from validateRules because it is about the shape of the stack rather than what is measured,
+ * and because it guards a specific failure: `min` and `max` are both hard bounds, so bounds that cross
+ * would have the floor pushing up and the ceiling pushing down on alternate ticks, forever. decideScale
+ * resolves that in favour of the floor rather than oscillating, but a config that can only be honoured
+ * by ignoring half of it should be refused at startup, not quietly reinterpreted every tick.
+ */
+export function validateBounds({ min, max }) {
+  const problems = [];
+  for (const [name, value] of [
+    ['min', min],
+    ['max', max],
+  ]) {
+    if (!Number.isInteger(value) || value < 1) {
+      problems.push(`${name} must be a whole number of replicas, at least 1 — got ${value}`);
+    }
+  }
+  if (!problems.length && min > max) {
+    problems.push(
+      `min (${min}) is above max (${max}) — a floor that pushes up and a ceiling that pushes ` +
+        `down cannot both be honoured, and alternating between them is an oscillator`,
+    );
+  }
+  return problems;
+}
+
+/**
  * @param {object} input
  * @param {number} input.replicas   how many replicas answered
  * @param {Array<{connections?: number, cpuPercent?: number, memoryMb?: number}>} input.metrics one per replica
@@ -141,6 +169,26 @@ export function decideScale({
     return {
       target: min,
       reason: `below the minimum of ${min}; restoring the floor from ${replicas}`,
+      signals: [],
+    };
+  }
+
+  // Over the ceiling, whatever the load says — the mirror of the floor above, and the same reasoning
+  // for both the ordering and the single step. `max` used to be consulted only on the way up, so a
+  // stack that ended up above it came down solely if load happened to fall under a down watermark;
+  // mid-band load held it there indefinitely, paying for replicas the operator had capped.
+  //
+  // Unlike a load-driven scale-down this needs no anti-flap projection: whatever the remaining
+  // replicas then read, the ceiling clamps the response to "already at max", so it cannot bounce.
+  //
+  // `min` wins if the two cross. Bounds that contradict each other are refused by validateBounds
+  // before the loop starts; this keeps the pure function from oscillating if anything ever calls it
+  // without checking, since an under-provisioned stack is the safer of the two ways to be wrong.
+  const ceiling = Math.max(min, max);
+  if (replicas > ceiling) {
+    return {
+      target: ceiling,
+      reason: `above the maximum of ${ceiling}; returning to the ceiling from ${replicas}`,
       signals: [],
     };
   }

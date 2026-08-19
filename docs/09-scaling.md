@@ -561,7 +561,41 @@ This is also what made `npm run test:postman` fail its `scaled-down` phase: it t
 replica, below the configured minimum, so the topology it scaled within was never valid, and "the
 autoscaler actually removed a replica" could not pass against a floor of 2. It runs 3/3 now.
 
-**Still one-directional the other way:** `max` has the mirror gap — a stack above the ceiling only comes
-down if load happens to be under the down watermark, so eight replicas with `max: 6` and mid-band load hold
-at eight. The same judgement applies (should the scaler remove replicas an operator added?), so it is
-called out here rather than quietly changed alongside the floor.
+### And the ceiling had the same gap
+
+`max` was one-directional in exactly the same way: consulted only on the way up, so a stack that ended up
+above it came down only if load happened to fall under a down watermark. Mid-band load held eight replicas
+at eight indefinitely, paying for capacity the operator had explicitly capped.
+
+Fixed symmetrically, and it needs no anti-flap projection — whatever the remaining replicas read after the
+step, the ceiling clamps the response to "already at max", so it cannot bounce:
+
+```
+replicas: 8  (config max = 6)
+scale down: 8 → 6 — above the maximum of 6; returning to the ceiling from 8
+scale down: 6 → 5 — below the watermark on mean connections 0.2 per replica (up>2 down<1)
+scale down: 5 → 4 — below the watermark on mean connections 0.2 per replica
+```
+
+One step back inside the bounds, then the signals take over again — which is the property worth having:
+the bounds decide where the scaler is *allowed* to be, load decides where it sits within them.
+
+### Two hard bounds can be made to fight
+
+Making both bounds hard introduces a failure the one-directional version could not have: with `min` above
+`max`, the floor pushes up and the ceiling pushes down, and the scaler alternates forever — one scaling
+action per tick, for the life of the process. That is a worse outcome than either bug being fixed here.
+
+So `validateBounds` refuses it before the loop starts, next to the existing check for watermarks that
+touch, which is the same class of mistake:
+
+```
+$ node scripts/autoscale.mjs --min 4 --max 2
+autoscaling config is not usable (autoscale.config.json):
+  - min (4) is above max (2) — a floor that pushes up and a ceiling that pushes down cannot both be
+    honoured, and alternating between them is an oscillator
+```
+
+`decideScale` also resolves crossed bounds in favour of the floor rather than oscillating, so the pure
+function is safe even if something ever calls it without validating first — an under-provisioned stack
+being the safer of the two ways to be wrong.
