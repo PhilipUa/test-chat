@@ -1,0 +1,64 @@
+{
+  "$comment": [
+    "Rate limiting rules — tasks/rate-limiting.md. Read at startup by src/config/rate-limit-rules.ts.",
+    "",
+    "Every rule is `limit` requests per `windowMs` sliding window, counted in Redis so the limit holds",
+    "across instances. Going over returns 429 with Retry-After (typing frames are dropped instead —",
+    "there is no response to carry a header on).",
+    "",
+    "Which buckets exist, and how each is keyed, is code — a key shape is a decision about what the",
+    "limit protects, and lives with the endpoint it guards. This file sets the numbers:",
+    "",
+    "  send    POST /api/messages                              per user, per conversation",
+    "  search  GET  /api/search                                per user (a search spans conversations)",
+    "  reads   GET  /api/messages, GET /api/conversations      per user",
+    "  create  POST /api/conversations                         per user",
+    "  typing  WebSocket `typing` frames                       per user, per conversation",
+    "",
+    "Not metered, deliberately: GET /api/health, because the autoscaler polls it to find replicas;",
+    "GET /api/users, a fixed-size lookup with no caller-controlled cost, which is also what the scaling",
+    "probe samples request distribution with; and typing *stop* frames, so a throttled client can't",
+    "leave someone stuck as \"typing\" forever.",
+    "",
+    "Precedence is env > this file > the defaults in src/config/rate-limit-rules.ts, so a deployment can",
+    "retune without a commit (RATE_LIMIT_MAX, SEARCH_RATE_LIMIT_MAX, READ_RATE_LIMIT_MAX,",
+    "CREATE_RATE_LIMIT_MAX, TYPING_RATE_LIMIT_MAX, and a _WINDOW_MS for each). RATE_LIMIT_CONFIG points",
+    "at a different file. A missing file is fine — the defaults are the shipped policy — but a malformed",
+    "or invalid one fails startup rather than quietly running numbers nobody chose.",
+    "",
+    "On picking numbers: `send` is the one the task specifies. `search` is the tight one, because search",
+    "is the only endpoint whose cost grows with the caller's history. `reads` and `create` are runaway",
+    "script guards, not tight controls — set them low enough to stop a loop and high enough that nobody",
+    "honest ever meets them. Prefer a short window: it bounds a burst just as well and an exhausted",
+    "client recovers in seconds instead of being dark for a minute."
+  ],
+
+  "rules": {
+    "send": { "limit": 5, "windowMs": 10000 },
+    "search": { "limit": 20, "windowMs": 10000 },
+    "reads": { "limit": 100, "windowMs": 10000 },
+    "create": { "limit": 60, "windowMs": 60000 },
+    "typing": { "limit": 10, "windowMs": 10000 }
+  },
+
+  "$examples": {
+    "stricter sends, for a public deployment": {
+      "send": { "limit": 3, "windowMs": 10000 }
+    },
+    "search protected harder, because it fans out over every message": {
+      "search": { "limit": 5, "windowMs": 10000 }
+    },
+    "a demo where the limits should be easy to trip by hand": {
+      "send": { "limit": 2, "windowMs": 10000 },
+      "search": { "limit": 3, "windowMs": 10000 },
+      "reads": { "limit": 10, "windowMs": 10000 }
+    },
+    "loose everywhere, for a load test that isn't testing the limiter": {
+      "send": { "limit": 1000, "windowMs": 10000 },
+      "search": { "limit": 1000, "windowMs": 10000 },
+      "reads": { "limit": 1000, "windowMs": 10000 },
+      "create": { "limit": 1000, "windowMs": 10000 },
+      "typing": { "limit": 1000, "windowMs": 10000 }
+    }
+  }
+}

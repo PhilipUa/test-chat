@@ -1,3 +1,5 @@
+import { loadRateLimitRules } from './config/rate-limit-rules.ts';
+
 function num(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
@@ -52,30 +54,14 @@ export const config = {
     maxPageSize: num('CONVERSATIONS_MAX_PAGE_SIZE', 200),
   },
 
-  /** tasks/rate-limiting.md: ~5 messages per 10s per user per conversation. */
-  rateLimit: {
-    limit: num('RATE_LIMIT_MAX', 5),
-    windowMs: num('RATE_LIMIT_WINDOW_MS', 10_000),
-    /** Typing frames are cheap but shouldn't be a free broadcast channel either. */
-    typingLimit: num('TYPING_RATE_LIMIT_MAX', 10),
-    typingWindowMs: num('TYPING_RATE_LIMIT_WINDOW_MS', 10_000),
-    /**
-     * Search is the most expensive read in the app — it fans out over every message in the
-     * caller's conversations. Sends were the only limited endpoint, which left an unmetered way
-     * to generate unbounded read load. Per user, not per conversation: search spans them.
-     */
-    searchLimit: num('SEARCH_RATE_LIMIT_MAX', 20),
-    searchWindowMs: num('SEARCH_RATE_LIMIT_WINDOW_MS', 10_000),
-    /**
-     * Creating conversations is cheap per call, but unbounded growth isn't. Deliberately a high
-     * ceiling: this is a runaway-script guard, not a tight control. Creating conversations is
-     * normal, bursty, legitimate behaviour (importing a backlog, an integration fanning out), and
-     * a tight limit here punishes real use to prevent something that isn't the actual abuse
-     * vector — search is. Set low enough to stop a loop, high enough that nobody honest meets it.
-     */
-    createLimit: num('CREATE_RATE_LIMIT_MAX', 60),
-    createWindowMs: num('CREATE_RATE_LIMIT_WINDOW_MS', 60_000),
-  },
+  /**
+   * Rate limiting rules — tasks/rate-limiting.md.
+   *
+   * The numbers are policy rather than code, so they live in `rate-limit.config.json` (env vars still
+   * win over the file, and the built-in defaults apply when there is no file at all). See
+   * config/rate-limit-rules.ts for what each bucket meters and why its default is what it is.
+   */
+  rateLimit: loadRateLimitRules(),
 
   search: {
     defaultLimit: num('SEARCH_LIMIT', 25),

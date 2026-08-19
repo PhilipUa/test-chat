@@ -219,6 +219,28 @@ Covered in fix 3 above.
 - Typing frames get their own looser bucket — a broadcast primitive shouldn't be a free
   megaphone.
 
+Five buckets in total, same mechanism throughout — `send` (user + conversation), `search` (user),
+`reads` for `GET /api/messages` and `GET /api/conversations` (user), `create` (user) and `typing`
+(user + conversation). `/api/health` stays unmetered on purpose, because the autoscaler polls it to
+discover replicas, and a typing *stop* frame is never dropped, or a throttled client would leave
+someone stuck as "typing".
+
+**The numbers live in [`rate-limit.config.json`](../rate-limit.config.json), not in code.** They are
+policy: what a limit should be is a judgement about a deployment, and asking someone to edit
+TypeScript or to guess five environment variable names to change it is the wrong shape. Same argument
+`autoscale.config.json` makes for scaling rules, so the file is deliberately its counterpart — every
+knob documented in a `$comment`, `$examples` to copy from, bind-mounted so a retune is an edit and a
+restart. What stays in code is which buckets exist and how each is keyed, because a key shape is a
+decision about what the limit protects.
+
+Precedence is env > file > built-in defaults, so a deployment can still override one rule without a
+commit. Validation is strict and fails startup: a limit of `0` rejects every request, `windowMs: 10`
+instead of `10000` meters a thousand times too loosely, and a rule misspelled `sends` looks
+configured while doing nothing — all three fail in a direction nobody notices, which is the worst
+property a protection mechanism can have. `src/config/rate-limit-rules.ts` resolves and validates as
+a pure function over (file, env), and `tests/rate-limit-config.test.mjs` covers it, including that
+the shipped file and its examples are valid against the loader that reads them.
+
 ```
 send 1 -> 201  remaining=4
 ...

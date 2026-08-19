@@ -62,11 +62,35 @@ What it scales on is configuration: `connections`, `cpu` (percent of one core), 
 Realtime state is shared through Redis, so replicas are interchangeable. `curl localhost:9901/clusters`
 shows which replicas Envoy has discovered, and `/api/health` reports which one served you.
 
+### Rate limits
+
+Five metered buckets, all one mechanism — an atomic sliding window in Redis, so a limit holds across
+replicas — and all set in [`rate-limit.config.json`](rate-limit.config.json):
+
+| bucket | endpoint | keyed by | default |
+|---|---|---|---|
+| `send` | `POST /api/messages` | user + conversation | 5 / 10s |
+| `search` | `GET /api/search` | user | 20 / 10s |
+| `reads` | `GET /api/messages`, `GET /api/conversations` | user | 100 / 10s |
+| `create` | `POST /api/conversations` | user | 60 / 60s |
+| `typing` | WebSocket `typing` frames | user + conversation | 10 / 10s |
+
+Going over returns `429` with `Retry-After` (typing frames are dropped — there is no response to
+carry a header on). Deliberately unmetered: `/api/health`, because the autoscaler polls it to find
+replicas; `/api/users`, a fixed-size lookup with no caller-controlled cost; and typing *stop* frames,
+so a throttled client can't leave someone stuck as "typing".
+
+The file is bind-mounted, so retuning a limit is an edit plus `docker compose restart api` rather
+than a rebuild. Which buckets exist and how each is keyed stays in code — a key shape is a decision
+about what the limit protects — and the file sets the numbers. `RATE_LIMIT_MAX` and friends still
+work and still win over the file; a malformed or invalid file fails startup rather than quietly
+running numbers nobody chose.
+
 ### Tests
 
-178 tests — 81 API-level, 17 in a real browser, 80 unit tests (the error-handling helpers, the
-WebSocket connection lifecycle, the process error policy, the autoscaling rules, the process metrics, and
-the browser helpers):
+204 tests — 83 API-level, 17 in a real browser, 104 unit tests (the error-handling helpers, the
+WebSocket connection lifecycle, the process error policy, the autoscaling rules, the rate-limit rule
+loader, the process metrics, and the browser helpers):
 
 ```
 npm install
@@ -176,7 +200,7 @@ handler, no heartbeat and no client reconnect; and conversation titles went thro
 
 **Built all four tasks** — multi-instance realtime (Redis pub/sub, refcounted per conversation),
 rate limiting (atomic sliding window in Lua, `429` + `Retry-After`, per user per conversation,
-fails open), search (Mongo `$text` ranked, scoped to your own conversations, with a bounded
+fails open, rules in a config file), search (Mongo `$text` ranked, scoped to your own conversations, with a bounded
 substring fallback for partial words), and the typing indicator (over the same Redis path, so it
 works multi-instance too).
 

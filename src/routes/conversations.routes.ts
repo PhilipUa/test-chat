@@ -1,18 +1,27 @@
 import { Router } from 'express';
-import { config } from '../config.ts';
 import * as conversations from '../controllers/conversations.controller.ts';
 import { asyncHandler } from '../middleware/async-handler.ts';
 import { actorId } from '../middleware/locals.ts';
 import { parseConversationPayload } from '../middleware/payload.ts';
-import { rateLimit } from '../middleware/rate-limit.ts';
+import { rateLimit, rateLimitReads } from '../middleware/rate-limit.ts';
 import { fromBody, fromParam, fromQuery, requireActor } from '../middleware/require-actor.ts';
 import { requireParticipant } from '../middleware/require-participant.ts';
 import { consumeCreateQuota } from '../services/rate-limit.ts';
 
 export const conversationsRouter = Router();
 
-/** GET /api/conversations?userId=… — the inbox for one user. */
-conversationsRouter.get('/', requireActor(fromQuery('userId')), asyncHandler(conversations.list));
+/**
+ * GET /api/conversations?userId=… — the inbox for one user.
+ *
+ * Metered on the shared `reads` bucket, together with message history: the client refetches this on
+ * every reconnect and every resync, which is exactly the shape a runaway loop has too.
+ */
+conversationsRouter.get(
+  '/',
+  requireActor(fromQuery('userId')),
+  rateLimitReads,
+  asyncHandler(conversations.list),
+);
 
 /**
  * POST /api/conversations
@@ -30,10 +39,8 @@ conversationsRouter.post(
   parseConversationPayload,
   rateLimit({
     consume: (_req, res) => consumeCreateQuota(actorId(res)),
-    describe: (limit) =>
-      `rate limit exceeded: at most ${limit} new conversations per ${
-        config.rateLimit.createWindowMs / 1000
-      }s`,
+    describe: (limit, windowSeconds) =>
+      `rate limit exceeded: at most ${limit} new conversations per ${windowSeconds}s`,
   }),
   asyncHandler(conversations.create),
 );

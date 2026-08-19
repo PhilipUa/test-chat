@@ -1,7 +1,8 @@
 import type { Request, RequestHandler, Response } from 'express';
 import { HttpError } from '../errors.ts';
 import { asyncHandler } from './async-handler.ts';
-import type { RateLimitResult } from '../services/rate-limit.ts';
+import { actorId } from './locals.ts';
+import { consumeReadQuota, type RateLimitResult } from '../services/rate-limit.ts';
 
 /**
  * Rate limiting as middleware — tasks/rate-limiting.md.
@@ -16,8 +17,11 @@ import type { RateLimitResult } from '../services/rate-limit.ts';
 export interface RateLimitOptions {
   /** Which bucket to charge. Reads res.locals, so it runs after the actor/participant middleware. */
   consume: (req: Request, res: Response) => Promise<RateLimitResult>;
-  /** Message for the 429, given the limit that was exceeded. */
-  describe: (limit: number) => string;
+  /**
+   * Message for the 429, given the rule that was exceeded. Both numbers come from the result, so the
+   * message can't describe a rule other than the one actually charged.
+   */
+  describe: (limit: number, windowSeconds: number) => string;
   /** Requests to let through unmetered — work that costs nothing shouldn't cost quota. */
   skip?: (req: Request) => boolean;
 }
@@ -45,9 +49,22 @@ export function rateLimit({ consume, describe, skip }: RateLimitOptions): Reques
 
     const retryAfterSeconds = Math.max(1, Math.ceil(result.retryAfterMs / 1000));
     res.setHeader('Retry-After', String(retryAfterSeconds));
-    throw HttpError.tooManyRequests(describe(result.limit), {
+    throw HttpError.tooManyRequests(describe(result.limit, result.windowMs / 1000), {
       retryAfterMs: result.retryAfterMs,
       retryAfterSeconds,
     });
   });
 }
+
+/**
+ * The shared `reads` bucket, wired once.
+ *
+ * `GET /api/messages` and `GET /api/conversations` both draw on it, and a copy of this per route is
+ * exactly how two endpoints' 429s drift apart — the thing the factory above exists to prevent. The
+ * route table still names it, so what is metered stays visible where the chain is declared.
+ */
+export const rateLimitReads: RequestHandler = rateLimit({
+  consume: (_req, res) => consumeReadQuota(actorId(res)),
+  describe: (limit, windowSeconds) =>
+    `read rate limit exceeded: at most ${limit} list reads per ${windowSeconds}s`,
+});

@@ -142,7 +142,14 @@ export async function conversationsOf(userId, { limit, cursor } = {}) {
   const query = new URLSearchParams({ userId: String(userId) });
   if (limit !== undefined) query.set('limit', String(limit));
   if (cursor) query.set('cursor', cursor);
-  const res = await get(`/api/conversations?${query}`);
+  let res = await get(`/api/conversations?${query}`);
+  if (res.status === 429) {
+    // List reads are metered too, and the presence helpers below poll this endpoint several times a
+    // second. Honour Retry-After rather than returning an empty inbox: a throttled poll that looks
+    // like "no conversations" fails the caller's assertion for entirely the wrong reason.
+    await sleep((Number(res.headers.get('retry-after')) || 1) * 1000 + 250);
+    res = await get(`/api/conversations?${query}`);
+  }
   if (Array.isArray(res.body)) return res.body;
   return res.body?.conversations ?? [];
 }

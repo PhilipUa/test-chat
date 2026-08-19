@@ -43,6 +43,10 @@ services:
       - ./tests:/app/tests
       - ./package.json:/app/package.json:ro
       - ./tsconfig.json:/app/tsconfig.json:ro
+      # Mounted, not just baked in by the image build: the point of putting the rate limits in a file
+      # is that editing the file changes them, and `docker compose restart api` is a much better loop
+      # for retuning a limit than a rebuild.
+      - ./rate-limit.config.json:/app/rate-limit.config.json:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
@@ -73,6 +77,10 @@ services:
       - ./tests:/app/tests
       - ./package.json:/app/package.json:ro
       - ./tsconfig.json:/app/tsconfig.json:ro
+      # Mounted, not just baked in by the image build: the point of putting the rate limits in a file
+      # is that editing the file changes them, and `docker compose restart api` is a much better loop
+      # for retuning a limit than a rebuild.
+      - ./rate-limit.config.json:/app/rate-limit.config.json:ro
     depends_on:
       mysql:
         condition: service_healthy

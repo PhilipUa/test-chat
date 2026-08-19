@@ -63,6 +63,7 @@ src/
     rate-limit.ts           the limiter and the 429 shape, once
     locals.ts               typed res.locals, with accessors that throw on a wiring mistake
 
+  config.ts / config/      settings, and the rate-limit rule loader that reads rate-limit.config.json
   validation/parse.ts       request value parsers (int, intOr, nonEmptyString, …)
   services/                 the domain. Unchanged, and still knows nothing about HTTP.
   ws/  db/  util/           unchanged

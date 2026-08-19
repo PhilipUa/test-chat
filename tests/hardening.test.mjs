@@ -66,6 +66,48 @@ describe('read paths are rate limited too (sends were the only metered endpoint)
     assert.ok(Number(limited.headers.get('retry-after')) >= 1);
   });
 
+  it('limits the list reads — message history and the inbox share one allowance', async () => {
+    // GET /api/messages and GET /api/conversations were both unmetered. Each page is bounded, so
+    // neither is the fan-out search is, but an unmetered loop is still an open tap against MySQL and
+    // Mongo. They share one bucket because a client that loops does it over whichever endpoint is to
+    // hand, and two buckets would just hand a loop twice the allowance.
+    //
+    // Uses user 3 as the reader on purpose, same reasoning as the create-limit test above: observing
+    // the limit means exhausting somebody's allowance, and nothing else in the suite reads as user 3.
+    const conv = await freshConversation([3, 1]);
+
+    let limited;
+    let accepted = 0;
+    for (let i = 0; i < 200; i++) {
+      const res = await get(`/api/messages?conversationId=${conv.id}&userId=3`);
+      if (res.status === 429) {
+        limited = res;
+        break;
+      }
+      assert.equal(res.status, 200);
+      accepted++;
+    }
+
+    assert.ok(limited, 'expected list reads to be rate limited');
+    assert.ok(Number(limited.headers.get('retry-after')) >= 1, 'a 429 must carry Retry-After');
+    assert.ok(accepted >= 20, `expected a generous allowance before limiting, got ${accepted}`);
+
+    // The inbox draws on the same bucket, so it is throttled by the reads just spent on history.
+    const inbox = await get('/api/conversations?userId=3');
+    assert.equal(inbox.status, 429, 'the inbox should share the message-history allowance');
+  });
+
+  it('does not spend read quota on a request it was going to reject anyway', async () => {
+    // Same ordering rule the send limiter follows: authorization runs first, so a caller who is not a
+    // participant gets 403 and pays nothing — otherwise probing conversations you can't see would be
+    // a way to burn your own quota, and a 403 would start arriving as a 429.
+    const conv = await freshConversation([1, 2]);
+    const forbidden = await get(`/api/messages?conversationId=${conv.id}&userId=3`);
+
+    assert.equal(forbidden.status, 403);
+    assert.equal(forbidden.headers.get('x-ratelimit-limit'), null, 'a 403 should carry no quota headers');
+  });
+
   it('accepts offset=0, which is what a first page asks for', async () => {
     // This was a 400: the offset went through a positive-integer validator, which rejects zero.
     const res = await get('/api/search?q=the&userId=1&offset=0');

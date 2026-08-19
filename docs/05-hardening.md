@@ -34,6 +34,15 @@ Fixed on both axes, because either alone is insufficient:
 The 429 shape moved into `src/http/rate-limit-headers.ts`, since copying it per endpoint is how the
 headers drift apart.
 
+*Later:* the list reads left over from this pass — `GET /api/messages` and `GET /api/conversations` —
+are metered too now, sharing one `reads` bucket keyed per user. Neither is the fan-out search is (both
+are bounded page-size queries, which is why they weren't the urgent hole), but unmetered they are
+still an open tap against MySQL and Mongo, and one bucket for both is deliberate: a client that loops
+does it over whichever endpoint is to hand, so two buckets would only hand a loop twice the
+allowance. `/api/users` returns the whole users table — five rows of demo data, with no caller-controlled cost —
+and stays unmetered. All
+five buckets' numbers now live in `rate-limit.config.json` — see `docs/03-changes.md`.
+
 On the create limit: I first set it to 10/minute, which promptly broke the test suite — nearly
 every test creates a conversation. That's a real signal, not just a test problem. Creating
 conversations is normal, bursty, legitimate behaviour (importing a backlog, an integration fanning

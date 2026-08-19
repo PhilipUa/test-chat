@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { config } from '../config.ts';
 import * as search from '../controllers/search.controller.ts';
 import { asyncHandler } from '../middleware/async-handler.ts';
 import { actorId } from '../middleware/locals.ts';
@@ -20,10 +19,8 @@ searchRouter.get(
   requireActor(fromQuery('userId')),
   rateLimit({
     consume: (_req, res) => consumeSearchQuota(actorId(res)),
-    describe: (limit) =>
-      `search rate limit exceeded: at most ${limit} searches per ${
-        config.rateLimit.searchWindowMs / 1000
-      }s`,
+    describe: (limit, windowSeconds) =>
+      `search rate limit exceeded: at most ${limit} searches per ${windowSeconds}s`,
     skip: search.isBlankQuery,
   }),
   asyncHandler(search.search),
