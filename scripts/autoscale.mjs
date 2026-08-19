@@ -32,7 +32,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { decideScale, validateRules } from './autoscale-policy.mjs';
+import { decideScale, validateBounds, validateRules } from './autoscale-policy.mjs';
 
 const BASE = process.env.RELAY_URL || 'http://localhost:3000';
 
@@ -117,9 +117,10 @@ const config = {
   rules: resolveRules(),
 };
 
-// Refuse to start on a bad rule set. A scaler that dies on its first tick is easy to mistake for one
-// that is quietly running and deciding nothing.
-const problems = validateRules(config.rules);
+// Refuse to start on a bad rule set or bounds that contradict each other. A scaler that dies on its
+// first tick is easy to mistake for one that is quietly running and deciding nothing — and bounds that
+// cross are worse than that, because it would keep running and scale on every single tick.
+const problems = [...validateBounds(config), ...validateRules(config.rules)];
 if (problems.length) {
   console.error(`autoscaling config is not usable (${configPath}):`);
   for (const problem of problems) console.error(`  - ${problem}`);

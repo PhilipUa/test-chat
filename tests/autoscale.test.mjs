@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { KNOWN_SIGNALS, decideScale, validateRules } from '../scripts/autoscale-policy.mjs';
+import {
+  KNOWN_SIGNALS,
+  decideScale,
+  validateBounds,
+  validateRules,
+} from '../scripts/autoscale-policy.mjs';
 
 /**
  * Unit tests for the autoscaling decision.
@@ -78,6 +83,113 @@ describe('decideScale · a single connections rule', () => {
 
     assert.equal(d.target, 2);
     assert.match(d.reason, /min/i);
+  });
+
+  /**
+   * `min` used to be consulted only on the way down, so a stack that ended up under it — a manual
+   * `--scale`, a crash-looping replica, a restore — sat there forever, reporting "already at min 2"
+   * while running one replica. A floor is a floor in both directions.
+   */
+  it('climbs back to min when it finds itself below the floor', () => {
+    const d = decide({ replicas: 1, metrics: [replica(0)] });
+
+    assert.equal(d.target, 2);
+    assert.match(d.reason, /below the minimum/i);
+  });
+
+  it('restores the floor even when the signal is mid-band', () => {
+    // Nothing about the load says "scale up" — the floor alone is the reason.
+    const d = decide({ replicas: 1, metrics: [replica(70)] });
+
+    assert.equal(d.target, 2);
+    assert.match(d.reason, /below the minimum/i);
+  });
+
+  it('restores the floor in one step rather than climbing to it one replica at a time', () => {
+    // Load-driven scale-up is deliberately +1 per tick; a floor is a constraint, not a response to
+    // load, and leaving the stack under-provisioned for three more cooldowns serves nobody.
+    const d = decide({ replicas: 1, metrics: [replica(0)], min: 4 });
+
+    assert.equal(d.target, 4);
+  });
+
+  it('restoring the floor outranks the cooldown', () => {
+    // Same reasoning as the no-replica-answered case, which already bypasses it: a cooldown exists to
+    // stop load-chasing churn, not to hold a stack below its own minimum.
+    const d = decide({ replicas: 1, metrics: [replica(0)], cooldownRemainingMs: 12_000 });
+
+    assert.equal(d.target, 2);
+    assert.match(d.reason, /below the minimum/i);
+  });
+
+  it('still reports being *at* the floor accurately', () => {
+    const d = decide({ replicas: 2, metrics: [replica(0), replica(0)] });
+
+    assert.equal(d.target, 2);
+    assert.match(d.reason, /already at min/i);
+  });
+
+  /**
+   * The mirror of the floor above. `max` was consulted only on the way up, so a stack that ended up
+   * over the ceiling came down solely if load happened to sit under the down watermark — mid-band
+   * load held it there indefinitely, paying for replicas the operator had capped.
+   */
+  it('comes back down to max when it finds itself above the ceiling', () => {
+    const d = decide({ replicas: 8, metrics: Array.from({ length: 8 }, () => replica(0)) });
+
+    assert.equal(d.target, 6);
+    assert.match(d.reason, /above the maximum/i);
+  });
+
+  it('returns to the ceiling even when the signal is mid-band', () => {
+    // Nothing about the load says "scale down" — the ceiling alone is the reason.
+    const d = decide({ replicas: 8, metrics: Array.from({ length: 8 }, () => replica(70)) });
+
+    assert.equal(d.target, 6);
+    assert.match(d.reason, /above the maximum/i);
+  });
+
+  it('returns to the ceiling in one step rather than shedding one replica at a time', () => {
+    const d = decide({ replicas: 9, metrics: Array.from({ length: 9 }, () => replica(0)) });
+
+    assert.equal(d.target, 6);
+  });
+
+  it('returning to the ceiling outranks the cooldown', () => {
+    const d = decide({
+      replicas: 8,
+      metrics: Array.from({ length: 8 }, () => replica(0)),
+      cooldownRemainingMs: 12_000,
+    });
+
+    assert.equal(d.target, 6);
+    assert.match(d.reason, /above the maximum/i);
+  });
+
+  it('still reports being *at* the ceiling accurately', () => {
+    const d = decide({ replicas: 6, metrics: Array.from({ length: 6 }, () => replica(9_999)) });
+
+    assert.equal(d.target, 6);
+    assert.match(d.reason, /already at max/i);
+  });
+
+  /**
+   * Two hard bounds can be made to fight each other. With min above max, a floor that pushes up and a
+   * ceiling that pushes down would alternate forever — one scaling action per tick, for the life of
+   * the process. validateBounds refuses that configuration up front, and this pins the pure function
+   * so it cannot oscillate even when handed bounds nobody validated.
+   */
+  it('cannot be made to oscillate by bounds that cross', () => {
+    const bounds = { min: 4, max: 2 };
+    const below = decide({ replicas: 1, metrics: [replica(0)], ...bounds });
+    assert.equal(below.target, 4, 'the floor wins when the bounds contradict');
+
+    const settled = decide({
+      replicas: 4,
+      metrics: Array.from({ length: 4 }, () => replica(0)),
+      ...bounds,
+    });
+    assert.equal(settled.target, 4, 'and having got there, it is not pushed straight back down');
   });
 
   it('does nothing at all while cooling down', () => {
@@ -275,6 +387,22 @@ describe('validateRules', () => {
 
   it('rejects non-numeric watermarks', () => {
     assert.match(validateRules([{ signal: 'cpu', up: '70', down: 20 }])[0], /numeric/);
+  });
+
+  it('rejects bounds that cross, because two hard bounds fighting is an oscillator', () => {
+    const problems = validateBounds({ min: 4, max: 2 });
+
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /min.*4.*above.*max.*2/i);
+  });
+
+  it('accepts a min equal to max, which pins the replica count', () => {
+    assert.deepEqual(validateBounds({ min: 3, max: 3 }), []);
+  });
+
+  it('rejects bounds that are not usable replica counts', () => {
+    assert.equal(validateBounds({ min: 0, max: 6 }).length, 1);
+    assert.equal(validateBounds({ min: 2, max: 'six' }).length, 1);
   });
 
   it('reports every problem, not just the first', () => {
