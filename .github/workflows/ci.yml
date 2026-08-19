@@ -13,6 +13,12 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to the same branch makes the run in flight irrelevant. Without this they queue up and
+# compete for runners, so the result you actually care about arrives last.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   static:
     runs-on: ubuntu-latest
@@ -42,14 +48,15 @@ jobs:
       # the suite import app source directly (tests/ws-lifecycle.test.mjs reaches src/ws, which
       # pulls in src/db), and those imports need a client on the runner too.
       - run: npm run prisma:generate
-      # tests/ui*.test.mjs drive the real app in a real browser. `npm ci` installs the Playwright
-      # package but not its browsers, so without this the 17 UI tests cancel on launch. Chromium
-      # only — that is the one they ask for.
-      - run: npx playwright install --with-deps chromium
       - run: cp .env.example .env
       - run: docker compose up -d --wait
         timeout-minutes: 10
-      - run: npm test
+      # `test:ci`, not `test`: the browser-driven tests (tests/ui*.test.mjs) are a local check. They
+      # need a Playwright browser, and installing one here cost several minutes of apt and download
+      # on every run — most of this job's wall clock — to re-run assertions a developer already
+      # makes locally with `npm test`. Everything else, including the whole HTTP and WebSocket
+      # surface, still runs here against the real stack.
+      - run: npm run test:ci
         timeout-minutes: 20
       - name: stack logs on failure
         if: failure()

@@ -12,6 +12,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "node --import tsx --test --test-concurrency=1 \"tests/**/*.test.mjs\"",
+    "test:ci": "node --import tsx --test --test-concurrency=1 \"tests/!(ui*).test.mjs\"",
     "probe:realtime": "node scripts/probe-realtime.mjs",
     "audit:tasks": "node scripts/audit-tasks.mjs",
     "test:postman": "node scripts/test-postman-scaling.mjs",

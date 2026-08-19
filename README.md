@@ -95,7 +95,8 @@ loader, the process metrics, and the browser helpers):
 
 ```
 npm install
-npm test              # needs the stack up
+npm test              # needs the stack up. Includes the browser-driven UI tests
+npm run test:ci       # the same suite without them — what CI runs, no browser needed
 npm run typecheck
 npm run audit:tasks   # checks every requirement in tasks/ and prints the evidence
 npm run verify        # typecheck + suite + task audit + every probe, in one command
