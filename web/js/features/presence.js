@@ -21,6 +21,22 @@ export function onPresenceSnapshot(event) {
   renderSidebar();
 }
 
+/**
+ * Seeds presence for a conversation from an inbox row's participants.
+ *
+ * The snapshot only covers what we were subscribed to when we subscribed, so a conversation that
+ * arrived over the socket afterwards has no presence entry and renders with nobody online — even
+ * though the row it arrived in says who is. Only for conversations we have no entry for: a live
+ * `presence` event is more current than a row we were handed.
+ */
+export function seedPresence(conversationId, participants = []) {
+  if (state.presence.has(conversationId)) return;
+  state.presence.set(
+    conversationId,
+    new Set(participants.filter((p) => p.online).map((p) => p.id)),
+  );
+}
+
 export function onlineIn(conversationId) {
   return state.presence.get(conversationId) ?? new Set();
 }

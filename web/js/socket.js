@@ -1,6 +1,6 @@
 import { getMessages } from './api.js';
 import { conversationById, el, noteLatestMessage, state } from './state.js';
-import { onPresenceEvent, onPresenceSnapshot } from './features/presence.js';
+import { onPresenceEvent, onPresenceSnapshot, seedPresence } from './features/presence.js';
 import { onTypingEvent, stopTyping } from './features/typing.js';
 import { appendMessage, markRead, openConversation } from './views/messages.js';
 import { renderSidebar } from './views/sidebar.js';
@@ -87,6 +87,8 @@ function handleEvent(event) {
       // The server is now routing this conversation's events to us; only now are we really live.
       setStatus('live', false);
       return;
+    case 'conversation':
+      return onConversationEvent(event);
     case 'message':
       return onMessageEvent(event);
     case 'typing':
@@ -104,6 +106,24 @@ function handleEvent(event) {
     default:
       return;
   }
+}
+
+/**
+ * A conversation we've just been added to.
+ *
+ * The row arrives whole, so the sidebar can render it without refetching the inbox. The server has
+ * already pointed our socket at it — we'd receive its messages either way — but the subscription set
+ * we send on the next reconnect is built from `state.conversations`, so a conversation missing from
+ * there would quietly drop out at that point.
+ */
+function onConversationEvent(event) {
+  const conversation = event.conversation;
+  if (!conversation?.id || conversationById(conversation.id)) return;
+  state.conversations = [...state.conversations, conversation];
+  // The row carries who is online; without this the conversation renders with nobody around until
+  // something else prompts a fresh presence snapshot.
+  seedPresence(conversation.id, conversation.participants);
+  renderSidebar();
 }
 
 function onMessageEvent(msg) {

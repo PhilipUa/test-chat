@@ -1,6 +1,15 @@
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { freshConversation, post, sleep, unique, waitForApi, wsClient } from './helpers.mjs';
+import {
+  conversationsOf,
+  freshConversation,
+  post,
+  retryOn429,
+  sleep,
+  unique,
+  waitForApi,
+  wsClient,
+} from './helpers.mjs';
 
 /**
  * tasks/multi-instance.md — finding C.
@@ -200,6 +209,110 @@ describe('realtime fan-out', () => {
       assert.equal(copies, 1, "a retried send must not put a second copy in everyone's window");
     } finally {
       await watcher.close();
+    }
+  });
+});
+
+/**
+ * A conversation you were just added to is a change to *your* inbox, but it happens in a
+ * conversation you have never heard of — so there is no conversation channel you could already be
+ * subscribed to. These are the tests for the per-user announcement channel that carries it.
+ */
+describe('a new conversation', () => {
+  /** A socket subscribed to everything `userId` is in right now — what a loaded tab holds. */
+  async function socketOnCurrentInbox(userId) {
+    const inbox = await conversationsOf(userId, { limit: 200 });
+    return wsClient(
+      userId,
+      inbox.map((c) => c.id),
+    );
+  }
+
+  it("announces itself to the other participant's open socket", async () => {
+    const bob = await socketOnCurrentInbox(2);
+
+    try {
+      const title = unique('announce');
+      const res = await retryOn429(() =>
+        post('/api/conversations', { title, participantIds: [1, 2] }),
+      );
+      assert.equal(res.status, 201);
+
+      const event = await bob.waitFor(
+        (e) => e.type === 'conversation' && e.conversation?.id === res.body.id,
+        5_000,
+      );
+      assert.ok(event, 'the other participant was never told the conversation exists');
+
+      // The payload has to be a usable inbox row, or the sidebar can only render half of it.
+      const conv = event.conversation;
+      assert.equal(conv.title, title);
+      assert.equal(conv.messageCount, 0);
+      assert.equal(conv.unreadCount, 0);
+      assert.equal(conv.lastMessage, null);
+      assert.ok(conv.activityAt, 'needs activityAt — it is the key the inbox is ordered by');
+      // Participants are the *other* people, as in GET /api/conversations.
+      assert.deepEqual(
+        conv.participants.map((p) => p.id),
+        [1],
+      );
+    } finally {
+      await bob.close();
+    }
+  });
+
+  it('delivers its first message without the recipient reloading', async () => {
+    const bob = await socketOnCurrentInbox(2);
+
+    try {
+      const res = await retryOn429(() =>
+        post('/api/conversations', { title: unique('first-message'), participantIds: [1, 2] }),
+      );
+      assert.equal(res.status, 201);
+      assert.ok(
+        await bob.waitFor(
+          (e) => e.type === 'conversation' && e.conversation?.id === res.body.id,
+          5_000,
+        ),
+      );
+
+      // Deliberately no re-subscribe frame: being told about a conversation has to be enough to
+      // start receiving it, or everything published between the announcement and the browser's
+      // next subscribe is lost.
+      const marker = unique('hello');
+      const sent = await post('/api/messages', {
+        conversationId: res.body.id,
+        senderId: 1,
+        body: marker,
+        clientId: marker,
+      });
+      assert.equal(sent.status, 201);
+
+      assert.ok(
+        await bob.waitFor((e) => e.type === 'message' && e.body === marker, 5_000),
+        'the first message in a new conversation never reached the other participant',
+      );
+    } finally {
+      await bob.close();
+    }
+  });
+
+  it('is not announced to people who are not in it', async () => {
+    const carol = await socketOnCurrentInbox(3);
+
+    try {
+      const res = await retryOn429(() =>
+        post('/api/conversations', { title: unique('private'), participantIds: [1, 2] }),
+      );
+      assert.equal(res.status, 201);
+
+      assert.equal(
+        await carol.waitFor((e) => e.type === 'conversation', 1_500),
+        undefined,
+        'the per-user channel must not leak conversations to non-participants',
+      );
+    } finally {
+      await carol.close();
     }
   });
 });

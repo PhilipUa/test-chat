@@ -17,6 +17,12 @@ export interface Client {
   userId?: number;
   /** Conversations this socket is subscribed to, already filtered to ones the user is in. */
   subs: Set<number>;
+  /**
+   * The Redis channels held on this socket's behalf: one per conversation in `subs`, plus the
+   * socket's own user channel. Derived from the two above, but stored rather than recomputed — see
+   * ws/subscriptions.ts, which owns both sets.
+   */
+  channels: Set<string>;
   /** Cleared on pong; a socket that misses two heartbeats is terminated. */
   missedPings: number;
   /**
@@ -38,6 +44,7 @@ export function add(ws: WebSocket): Client {
     id: crypto.randomUUID(),
     ws,
     subs: new Set(),
+    channels: new Set(),
     missedPings: 0,
     closed: false,
   };
@@ -49,8 +56,8 @@ export function add(ws: WebSocket): Client {
  * Drops a client from the set and marks it closed, so an in-flight frame handler can tell.
  *
  * Deliberately does not touch Redis channels or presence: this module owns the socket set and
- * nothing else. Releasing what the client held is ws/protocol.ts's `releaseClient`, which is the one
- * function that owns the whole teardown.
+ * nothing else. Releasing what the client held is ws/subscriptions.ts's `releaseClient`, which is
+ * the one function that owns the whole teardown.
  */
 export function markClosed(client: Client): void {
   client.closed = true;

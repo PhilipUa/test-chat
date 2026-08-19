@@ -8,7 +8,7 @@ import {
 } from '../middleware/locals.ts';
 import { createConversation, markRead } from '../services/conversations/commands.ts';
 import { listConversations } from '../services/conversations/queries.ts';
-import { publish } from '../ws/hub.ts';
+import { publish, publishToUsers } from '../ws/hub.ts';
 import { created, ok } from './respond.ts';
 
 /** Conversation endpoints. */
@@ -18,10 +18,27 @@ export async function list(req: Request, res: Response): Promise<void> {
   ok(res, await listConversations(actorId(res), conversationsQuery(res)));
 }
 
+/**
+ * Creates a conversation and tells the people in it.
+ *
+ * The announcement goes out on each participant's *user* channel, not the new conversation's:
+ * nobody can be subscribed to a conversation that did not exist a moment ago, so there was no route
+ * to them at all. Without it the other participants saw nothing until they reloaded — and, because
+ * their sockets were not subscribed either, missed every message sent in the meantime.
+ */
 export async function create(req: Request, res: Response): Promise<void> {
   // Validated by the conversation schema, before the rate limiter charged for it.
   const { title, participantIds } = newConversation(res);
-  created(res, await createConversation(title, participantIds));
+  const { conversation, summaries } = await createConversation(title, participantIds);
+
+  await publishToUsers(
+    summaries.map(({ userId, conversation }) => ({
+      userId,
+      event: { type: 'conversation' as const, conversation },
+    })),
+  );
+
+  created(res, conversation);
 }
 
 /**

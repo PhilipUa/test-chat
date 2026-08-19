@@ -6,10 +6,10 @@ import {
 import { onlineAmong, connectionClosed, connectionOpened } from '../services/presence.ts';
 import { consumeQuota } from '../services/rate-limit.ts';
 import { getUserName } from '../services/users.ts';
-import * as channels from './channels.ts';
 import { publish, publishEach } from './fanout.ts';
 import * as registry from './registry.ts';
 import type { Client } from './registry.ts';
+import { applySubscriptions, releaseClient } from './subscriptions.ts';
 import { parseJson } from '../util/resilience.ts';
 
 /**
@@ -18,6 +18,12 @@ import { parseJson } from '../util/resilience.ts';
  * Split out of ws/hub.ts so the transport wiring and the protocol are separate concerns. Everything
  * here is about interpreting what a client sent; nothing here owns connection state or Redis.
  */
+
+/**
+ * Re-exported so the transport wiring keeps talking to one module. The subscription bookkeeping
+ * itself lives in ws/subscriptions.ts, which fan-out also needs.
+ */
+export { applySubscriptions, releaseClient };
 
 export async function handleFrame(client: Client, raw: string): Promise<void> {
   // Malformed frames are expected rather than exceptional on a public socket, and are ignored.
@@ -37,40 +43,6 @@ export async function handleFrame(client: Client, raw: string): Promise<void> {
     default:
       return;
   }
-}
-
-/** Release target for a client that is going away. */
-const EMPTY_SUBS: ReadonlySet<number> = new Set();
-
-/**
- * Points a live client's subscriptions at exactly `allowed`, acquiring and releasing the difference.
- *
- * Returns false when the socket closed while its subscribe was still in flight, which is the whole
- * reason this is a named function: everything after the participant query has to be able to bail.
- * Acquiring a channel for a client that is already out of the registry leaks it permanently — nobody
- * is left to release it — and one replica was found holding 741 subscriptions for zero connections.
- */
-export function applySubscriptions(client: Client, allowed: number[]): boolean {
-  if (client.closed) return false;
-  const next = new Set(allowed);
-  channels.reconcile(client.subs, next);
-  client.subs = next;
-  return true;
-}
-
-/**
- * The whole teardown for one socket, in one place: mark it gone, release every channel it held, and
- * report which conversations it was in so the caller can announce the departure.
- *
- * One function rather than three steps at the call site, because the bug this fixes was precisely a
- * teardown that ran in the wrong order relative to an in-flight frame.
- */
-export function releaseClient(client: Client): number[] {
-  registry.markClosed(client);
-  const held = [...client.subs];
-  channels.reconcile(client.subs, EMPTY_SUBS);
-  client.subs = new Set();
-  return held;
 }
 
 /**
