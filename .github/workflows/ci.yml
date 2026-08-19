@@ -42,6 +42,10 @@ jobs:
       # the suite import app source directly (tests/ws-lifecycle.test.mjs reaches src/ws, which
       # pulls in src/db), and those imports need a client on the runner too.
       - run: npm run prisma:generate
+      # tests/ui*.test.mjs drive the real app in a real browser. `npm ci` installs the Playwright
+      # package but not its browsers, so without this the 17 UI tests cancel on launch. Chromium
+      # only — that is the one they ask for.
+      - run: npx playwright install --with-deps chromium
       - run: cp .env.example .env
       - run: docker compose up -d --wait
         timeout-minutes: 10
