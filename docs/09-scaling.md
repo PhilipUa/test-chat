@@ -516,3 +516,52 @@ So the assertion was rewritten to catch the regression that matters — the poli
 altogether, which would make *every* eviction abrupt — rather than failing on a slow peer. What a user would
 notice is asserted separately and held in every run, including the ones with a 1006: everyone resubscribes
 and receives the next message exactly once.
+
+## The floor only worked in one direction
+
+Found by checking the loop against a stack that was already sitting at one replica.
+
+`min` was consulted in exactly one place — the scale-down branch — so it stopped the scaler leaving the
+floor but never brought it back to it. A stack that ended up under its minimum stayed there for good, and
+said something self-contradictory while doing it:
+
+```
+replicas: 1  (config min = 2)
+hold at 1 — within the watermarks — mean connections 2.0 per replica (up>2 down<1)
+hold at 1 — within the watermarks — mean connections 2.0 per replica (up>2 down<1)
+replicas after: 1
+```
+
+That is reachable however careful the scaler is, because it is not the only thing that moves the replica
+count: a hand-typed `docker compose up --scale api=1`, a replica that crash-loops out of the set, a restore
+from a saved topology. `minReplicas` in a Kubernetes HPA is a hard floor in both directions, and the config
+here reads as the same promise.
+
+`decideScale` now checks it before anything else:
+
+```
+scale up: 1 → 2 — below the minimum of 2; restoring the floor from 1
+hold at 2 — within the watermarks — mean connections 1.0 per replica (up>2 down<1)
+```
+
+Two decisions worth naming, both matching what the no-replica-answered case already did:
+
+- **Ahead of the cooldown.** A cooldown exists to stop a scaler chasing load from tick to tick, not to hold
+  a stack below its own floor.
+- **Straight to `min`, not one step per tick.** Load-driven scale-up is deliberately gradual because it is
+  reacting to a signal that might pass. A floor is not a response to load; it is a constraint that is
+  currently not met, and climbing to it over three cooldowns leaves the stack under-provisioned for no
+  reason.
+
+The existing test named `never goes below min` used `replicas: 2, min: 2` — it pinned the floor as a
+*limit* and never asked what happens underneath it, which is why this survived a suite that was otherwise
+thorough about the policy. Five tests cover it now, including the two orderings above.
+
+This is also what made `npm run test:postman` fail its `scaled-down` phase: it took its baseline at one
+replica, below the configured minimum, so the topology it scaled within was never valid, and "the
+autoscaler actually removed a replica" could not pass against a floor of 2. It runs 3/3 now.
+
+**Still one-directional the other way:** `max` has the mirror gap — a stack above the ceiling only comes
+down if load happens to be under the down watermark, so eight replicas with `max: 6` and mid-band load hold
+at eight. The same judgement applies (should the scaler remove replicas an operator added?), so it is
+called out here rather than quietly changed alongside the floor.

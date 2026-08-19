@@ -80,6 +80,50 @@ describe('decideScale · a single connections rule', () => {
     assert.match(d.reason, /min/i);
   });
 
+  /**
+   * `min` used to be consulted only on the way down, so a stack that ended up under it — a manual
+   * `--scale`, a crash-looping replica, a restore — sat there forever, reporting "already at min 2"
+   * while running one replica. A floor is a floor in both directions.
+   */
+  it('climbs back to min when it finds itself below the floor', () => {
+    const d = decide({ replicas: 1, metrics: [replica(0)] });
+
+    assert.equal(d.target, 2);
+    assert.match(d.reason, /below the minimum/i);
+  });
+
+  it('restores the floor even when the signal is mid-band', () => {
+    // Nothing about the load says "scale up" — the floor alone is the reason.
+    const d = decide({ replicas: 1, metrics: [replica(70)] });
+
+    assert.equal(d.target, 2);
+    assert.match(d.reason, /below the minimum/i);
+  });
+
+  it('restores the floor in one step rather than climbing to it one replica at a time', () => {
+    // Load-driven scale-up is deliberately +1 per tick; a floor is a constraint, not a response to
+    // load, and leaving the stack under-provisioned for three more cooldowns serves nobody.
+    const d = decide({ replicas: 1, metrics: [replica(0)], min: 4 });
+
+    assert.equal(d.target, 4);
+  });
+
+  it('restoring the floor outranks the cooldown', () => {
+    // Same reasoning as the no-replica-answered case, which already bypasses it: a cooldown exists to
+    // stop load-chasing churn, not to hold a stack below its own minimum.
+    const d = decide({ replicas: 1, metrics: [replica(0)], cooldownRemainingMs: 12_000 });
+
+    assert.equal(d.target, 2);
+    assert.match(d.reason, /below the minimum/i);
+  });
+
+  it('still reports being *at* the floor accurately', () => {
+    const d = decide({ replicas: 2, metrics: [replica(0), replica(0)] });
+
+    assert.equal(d.target, 2);
+    assert.match(d.reason, /already at min/i);
+  });
+
   it('does nothing at all while cooling down', () => {
     const d = decide({
       replicas: 3,

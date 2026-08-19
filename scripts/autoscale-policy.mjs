@@ -127,6 +127,24 @@ export function decideScale({
     };
   }
 
+  // Under the floor, whatever the load says.
+  //
+  // `min` used to be consulted only on the way down, so a stack that ended up below it — a hand-typed
+  // `--scale`, a crash-looping replica, a restore — stayed there for good, holding at 1 while logging
+  // "already at min 2". A minimum that only stops you leaving is not a minimum.
+  //
+  // Ahead of the cooldown, like the no-replica case above and for the same reason: a cooldown exists to
+  // stop a scaler chasing load from tick to tick, not to hold a stack below its own floor. And straight
+  // to `min` rather than one step per tick — load-driven scale-up is deliberately gradual because it is
+  // reacting to a signal that may pass, while this is a constraint that is simply not being met.
+  if (replicas < min) {
+    return {
+      target: min,
+      reason: `below the minimum of ${min}; restoring the floor from ${replicas}`,
+      signals: [],
+    };
+  }
+
   const signals = rules.map((rule) => {
     const spec = SIGNALS[rule.signal];
     const aggregateName = rule.aggregate ?? 'mean';
@@ -187,6 +205,7 @@ export function decideScale({
     );
   }
 
+  // `replicas < min` returned above, so this is exactly "sitting on the floor".
   if (replicas <= min) {
     return hold(`under on every rule, but already at min ${min}`);
   }
