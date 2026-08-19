@@ -1,6 +1,6 @@
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { freshConversation, get, post, sleep, unique, waitForApi, wsClient } from './helpers.mjs';
+import { freshConversation, post, sleep, unique, waitForApi, wsClient } from './helpers.mjs';
 
 /**
  * tasks/multi-instance.md — finding C.
@@ -31,7 +31,10 @@ describe('realtime fan-out', () => {
     try {
       const marker = unique('fanout');
       const res = await post('/api/messages', {
-        conversationId: conv.id, senderId: 1, body: marker, clientId: marker,
+        conversationId: conv.id,
+        senderId: 1,
+        body: marker,
+        clientId: marker,
       });
       assert.equal(res.status, 201);
 
@@ -57,7 +60,10 @@ describe('realtime fan-out', () => {
     try {
       const marker = unique('once');
       await post('/api/messages', {
-        conversationId: conv.id, senderId: 1, body: marker, clientId: marker,
+        conversationId: conv.id,
+        senderId: 1,
+        body: marker,
+        clientId: marker,
       });
       await sleep(1_500);
 
@@ -91,14 +97,17 @@ describe('realtime fan-out', () => {
     }
   });
 
-  it('a read receipt reaches the user\'s other sessions', async () => {
+  it("a read receipt reaches the user's other sessions", async () => {
     const conv = await freshConversation([1, 2]);
     const sessions = [];
     for (let i = 0; i < 3; i++) sessions.push(await wsClient(1, [conv.id]));
 
     try {
       const sent = await post('/api/messages', {
-        conversationId: conv.id, senderId: 2, body: 'read me', clientId: unique('read'),
+        conversationId: conv.id,
+        senderId: 2,
+        body: 'read me',
+        clientId: unique('read'),
       });
       await post(`/api/conversations/${conv.id}/read`, { userId: 1, messageId: sent.body.id });
 
@@ -118,7 +127,10 @@ describe('realtime fan-out', () => {
     let accepted = 0;
     for (let i = 0; i < 15; i++) {
       const res = await post('/api/messages', {
-        conversationId: conv.id, senderId: 1, body: `cross ${i}`, clientId: unique('cross'),
+        conversationId: conv.id,
+        senderId: 1,
+        body: `cross ${i}`,
+        clientId: unique('cross'),
       });
       if (res.status === 429) break;
       accepted++;
@@ -144,7 +156,12 @@ describe('realtime fan-out', () => {
       assert.equal(ack.conversationIds.includes(a.id), false);
 
       const markerA = unique('gone');
-      await post('/api/messages', { conversationId: a.id, senderId: 1, body: markerA, clientId: markerA });
+      await post('/api/messages', {
+        conversationId: a.id,
+        senderId: 1,
+        body: markerA,
+        clientId: markerA,
+      });
       assert.equal(
         await client.waitFor((e) => e.type === 'message' && e.body === markerA, 1_500),
         undefined,
@@ -152,7 +169,12 @@ describe('realtime fan-out', () => {
       );
 
       const markerB = unique('here');
-      await post('/api/messages', { conversationId: b.id, senderId: 1, body: markerB, clientId: markerB });
+      await post('/api/messages', {
+        conversationId: b.id,
+        senderId: 1,
+        body: markerB,
+        clientId: markerB,
+      });
       assert.ok(
         await client.waitFor((e) => e.type === 'message' && e.body === markerB, 5_000),
         'should receive events for the newly subscribed conversation',
@@ -172,8 +194,10 @@ describe('realtime fan-out', () => {
       await post('/api/messages', payload); // the retry
       await sleep(1_500);
 
-      const copies = watcher.events.filter((e) => e.type === 'message' && e.clientId === clientId).length;
-      assert.equal(copies, 1, 'a retried send must not put a second copy in everyone\'s window');
+      const copies = watcher.events.filter(
+        (e) => e.type === 'message' && e.clientId === clientId,
+      ).length;
+      assert.equal(copies, 1, "a retried send must not put a second copy in everyone's window");
     } finally {
       await watcher.close();
     }

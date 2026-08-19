@@ -46,7 +46,9 @@ const jpost = (p, b) => req('POST', p, b);
 const results = [];
 function check(pass, requirement, detail) {
   results.push({ pass, requirement });
-  console.log(`  ${pass ? 'PASS' : 'FAIL'}  ${requirement}${detail ? `\n          ${detail}` : ''}`);
+  console.log(
+    `  ${pass ? 'PASS' : 'FAIL'}  ${requirement}${detail ? `\n          ${detail}` : ''}`,
+  );
 }
 const section = (title) => console.log(`\n═══ ${title} ═══`);
 
@@ -63,8 +65,22 @@ async function socket(userId, conversationIds) {
   });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('ws open timeout')), 10_000);
-    ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-    ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('ws error')); }, { once: true });
+    ws.addEventListener(
+      'open',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+    ws.addEventListener(
+      'error',
+      () => {
+        clearTimeout(timer);
+        reject(new Error('ws error'));
+      },
+      { once: true },
+    );
   });
 
   const waitFor = async (pred, ms = 6_000) => {
@@ -110,7 +126,9 @@ async function pollReplicas(samples = 30) {
 async function envoyEndpoints() {
   try {
     const text = await (await fetch(`${ADMIN}/clusters`)).text();
-    const lines = text.split('\n').filter((l) => l.startsWith('api::') && l.includes('::health_flags::'));
+    const lines = text
+      .split('\n')
+      .filter((l) => l.startsWith('api::') && l.includes('::health_flags::'));
     const total = lines.length;
     const healthy = lines.filter((l) => l.endsWith('::healthy')).length;
     return { total, healthy };
@@ -146,7 +164,11 @@ if (envoy) {
 }
 
 if (EXPECTED !== undefined) {
-  check(replicaCount === EXPECTED, `all ${EXPECTED} expected replicas are serving`, `saw ${replicaCount}`);
+  check(
+    replicaCount === EXPECTED,
+    `all ${EXPECTED} expected replicas are serving`,
+    `saw ${replicaCount}`,
+  );
 }
 
 // Distribution over a burst of requests. Round-robin should be close to even; the check is loose
@@ -215,7 +237,10 @@ check(
 // The original bug: a broadcast only reached sockets on the process that handled the POST.
 const marker = uid('fanout');
 const sent = await jpost('/api/messages', {
-  conversationId: conv.id, senderId: 1, body: marker, clientId: marker,
+  conversationId: conv.id,
+  senderId: 1,
+  body: marker,
+  clientId: marker,
 });
 await sleep(1_200);
 const copies = watchers.map(
@@ -272,7 +297,10 @@ console.log(
 
 const gapMarker = uid('gap');
 await jpost('/api/messages', {
-  conversationId: conv.id, senderId: 1, body: gapMarker, clientId: gapMarker,
+  conversationId: conv.id,
+  senderId: 1,
+  body: gapMarker,
+  clientId: gapMarker,
 });
 await sleep(1_000);
 const gapDelivered = watchers.filter((w) =>

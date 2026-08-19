@@ -4,7 +4,7 @@ import {
   participantIdsOfMany,
 } from '../services/conversations/membership.ts';
 import { onlineAmong, connectionClosed, connectionOpened } from '../services/presence.ts';
-import { consumeTypingQuota } from '../services/rate-limit.ts';
+import { consumeQuota } from '../services/rate-limit.ts';
 import { getUserName } from '../services/users.ts';
 import * as channels from './channels.ts';
 import { publish, publishEach } from './fanout.ts';
@@ -141,7 +141,12 @@ async function handleTyping(client: Client, frame: Record<string, unknown>): Pro
 
   // A typing indicator is a broadcast primitive, so it needs its own (looser) limit. Stop events
   // always go through, so a throttled client can't leave someone stuck as "typing".
-  if (isTyping && !(await consumeTypingQuota(userId, conversationId))) return;
+  if (
+    isTyping &&
+    !(await consumeQuota(`typing:${userId}:${conversationId}`, config.rateLimit.typing)).allowed
+  ) {
+    return;
+  }
 
   await publish(
     conversationId,

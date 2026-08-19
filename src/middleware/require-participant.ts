@@ -1,7 +1,7 @@
 import type { Request, RequestHandler } from 'express';
 import { asyncHandler } from './async-handler.ts';
 import { assertParticipant } from '../services/conversations/membership.ts';
-import { int } from '../validation/parse.ts';
+import { parseId } from '../validation/schemas.ts';
 import type { ActorSource } from './require-actor.ts';
 
 /**
@@ -26,14 +26,18 @@ export interface ParticipantOptions {
 }
 
 export function requireParticipant(options: ParticipantOptions): RequestHandler {
-  const { actor, conversation, actorField = 'userId', conversationField = 'conversationId' } =
-    options;
+  const {
+    actor,
+    conversation,
+    actorField = 'userId',
+    conversationField = 'conversationId',
+  } = options;
 
   return asyncHandler(async (req: Request, res, next) => {
-    const conversationId = int(conversation(req), conversationField);
+    const conversationId = parseId(conversation(req), conversationField);
     res.locals.conversationId = conversationId;
 
-    const actorId = int(actor(req), actorField);
+    const actorId = parseId(actor(req), actorField);
     res.locals.actorId = actorId;
     await assertParticipant(actorId, conversationId);
     next();

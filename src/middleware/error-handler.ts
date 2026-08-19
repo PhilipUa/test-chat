@@ -1,4 +1,5 @@
 import type { ErrorRequestHandler, RequestHandler } from 'express';
+import { ZodError } from 'zod';
 import { HttpError } from '../errors.ts';
 
 /** Terminal middleware: turns anything thrown by a route into a response. */
@@ -7,6 +8,14 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   // closes rather than hanging the client.
   if (res.headersSent) {
     res.destroy();
+    return;
+  }
+
+  // The validate middleware converts schema failures to HttpError before they get here; this
+  // catches a stray schema.parse() elsewhere, so a validation slip is a 400 that names the
+  // problem rather than a 500 that hides it.
+  if (err instanceof ZodError) {
+    res.status(400).json({ error: err.issues[0]?.message ?? 'invalid request' });
     return;
   }
 
@@ -25,7 +34,9 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     (err as { status?: number }).status ?? (err as { statusCode?: number }).statusCode;
   if (typeof parserStatus === 'number' && parserStatus >= 400 && parserStatus < 500) {
     const message =
-      err instanceof SyntaxError ? 'invalid JSON body' : (err as Error).message || 'request rejected';
+      err instanceof SyntaxError
+        ? 'invalid JSON body'
+        : (err as Error).message || 'request rejected';
     res.status(parserStatus).json({ error: message });
     return;
   }

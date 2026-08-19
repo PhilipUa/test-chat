@@ -41,9 +41,7 @@ after(async () => {
  * before loadUsers() has populated it, and reading its value then returns ''. Wait for the options.
  */
 async function waitReady(page) {
-  await page.waitForFunction(
-    () => document.querySelectorAll('#userSelect option').length > 0,
-  );
+  await page.waitForFunction(() => document.querySelectorAll('#userSelect option').length > 0);
   await page.waitForSelector('#conversations li, #conversations .empty');
 }
 
@@ -167,7 +165,8 @@ describe('UI: sending', () => {
       await sleep(1200); // give the broadcast time to arrive and reconcile
 
       const count = await page.evaluate(
-        (b) => [...document.querySelectorAll('.msg')].filter((m) => m.textContent.includes(b)).length,
+        (b) =>
+          [...document.querySelectorAll('.msg')].filter((m) => m.textContent.includes(b)).length,
         body,
       );
       assert.equal(count, 1, 'a sent message must appear exactly once');
@@ -190,7 +189,10 @@ describe('UI: sending', () => {
       // allowance this test exists to exhaust. (Learned by breaking it with a blanket replace.)
       for (let i = 0; i < 7; i++) {
         await post('/api/messages', {
-          conversationId: conv.id, senderId: 1, body: `burn ${i}`, clientId: unique('burn'),
+          conversationId: conv.id,
+          senderId: 1,
+          body: `burn ${i}`,
+          clientId: unique('burn'),
         });
       }
       const body = `throttled ${Date.now()}`;
@@ -239,11 +241,9 @@ describe('UI: loading races', () => {
       await page.press('#text', 'Enter');
 
       // Wait for the history to land on top of it.
-      await page.waitForFunction(
-        () => document.querySelectorAll('.msg').length >= 4,
-        undefined,
-        { timeout: 10_000 },
-      );
+      await page.waitForFunction(() => document.querySelectorAll('.msg').length >= 4, undefined, {
+        timeout: 10_000,
+      });
       await sleep(1500);
 
       const bodies = await page.evaluate(() =>
@@ -254,11 +254,7 @@ describe('UI: loading races', () => {
         'sent while loading',
         `the new message must be last, got order: ${JSON.stringify(bodies)}`,
       );
-      assert.equal(
-        bodies.filter((b) => b === 'sent while loading').length,
-        1,
-        'and exactly once',
-      );
+      assert.equal(bodies.filter((b) => b === 'sent while loading').length, 1, 'and exactly once');
     } finally {
       await ctx.close();
     }
@@ -273,10 +269,16 @@ describe('UI: loading races', () => {
     const aMarker = `alpha-${Date.now()}`;
     const bMarker = `beta-${Date.now()}`;
     await sendMessage({
-      conversationId: a.id, senderId: 2, body: aMarker, clientId: unique('a'),
+      conversationId: a.id,
+      senderId: 2,
+      body: aMarker,
+      clientId: unique('a'),
     });
     await sendMessage({
-      conversationId: b.id, senderId: 2, body: bMarker, clientId: unique('b'),
+      conversationId: b.id,
+      senderId: 2,
+      body: bMarker,
+      clientId: unique('b'),
     });
 
     const { ctx, page } = await openApp(1);
@@ -323,11 +325,17 @@ describe('UI: realtime', () => {
     const first = await freshConversation([1, 2], unique('ui-order-first'));
     const second = await freshConversation([1, 2], unique('ui-order-second'));
     await sendMessage({
-      conversationId: first.id, senderId: 2, body: 'first activity', clientId: unique('f'),
+      conversationId: first.id,
+      senderId: 2,
+      body: 'first activity',
+      clientId: unique('f'),
     });
     await sleep(50);
     await sendMessage({
-      conversationId: second.id, senderId: 2, body: 'second activity', clientId: unique('s'),
+      conversationId: second.id,
+      senderId: 2,
+      body: 'second activity',
+      clientId: unique('s'),
     });
 
     const { ctx, page } = await openApp(1);
@@ -337,7 +345,8 @@ describe('UI: realtime', () => {
       const topTitle = () =>
         page.evaluate(
           () =>
-            document.querySelector('#conversations li:not(.load-more) .conv-title')?.textContent ?? '',
+            document.querySelector('#conversations li:not(.load-more) .conv-title')?.textContent ??
+            '',
         );
 
       // `second` had the most recent message, so the server put it on top.
@@ -345,13 +354,17 @@ describe('UI: realtime', () => {
 
       // Now `first` gets a newer message, delivered over the socket rather than by a refetch.
       await sendMessage({
-        conversationId: first.id, senderId: 2, body: 'newest of all', clientId: unique('n'),
+        conversationId: first.id,
+        senderId: 2,
+        body: 'newest of all',
+        clientId: unique('n'),
       });
 
       await page.waitForFunction(
         (title) =>
           (
-            document.querySelector('#conversations li:not(.load-more) .conv-title')?.textContent ?? ''
+            document.querySelector('#conversations li:not(.load-more) .conv-title')?.textContent ??
+            ''
           ).includes(title),
         first.title,
         { timeout: 10_000 },
@@ -371,7 +384,10 @@ describe('UI: realtime', () => {
       await openConversation(page, conv.title);
       const body = `from bob ${Date.now()}`;
       await sendMessage({
-        conversationId: conv.id, senderId: 2, body, clientId: unique('live'),
+        conversationId: conv.id,
+        senderId: 2,
+        body,
+        clientId: unique('live'),
       });
       await page.waitForFunction(
         (b) => [...document.querySelectorAll('.msg')].some((m) => m.textContent.includes(b)),
@@ -405,7 +421,8 @@ describe('UI: realtime', () => {
       }
 
       await viewer.page.waitForFunction(
-        () => document.querySelector('.conv-preview.typing-preview')?.textContent?.includes('typing'),
+        () =>
+          document.querySelector('.conv-preview.typing-preview')?.textContent?.includes('typing'),
         undefined,
         { timeout: 8000 },
       );
@@ -426,7 +443,10 @@ describe('UI: realtime', () => {
     try {
       await waitLive(page);
       await sendMessage({
-        conversationId: conv.id, senderId: 2, body: 'unread please', clientId: unique('u'),
+        conversationId: conv.id,
+        senderId: 2,
+        body: 'unread please',
+        clientId: unique('u'),
       });
       await page.waitForFunction(
         (t) =>
@@ -447,7 +467,10 @@ describe('UI: search', () => {
     const conv = await freshConversation([1, 2], unique('ui-search'));
     const needle = `findme${Date.now()}`;
     await sendMessage({
-      conversationId: conv.id, senderId: 1, body: `a message about ${needle}`, clientId: unique('s'),
+      conversationId: conv.id,
+      senderId: 1,
+      body: `a message about ${needle}`,
+      clientId: unique('s'),
     });
 
     const { ctx, page } = await openApp(1);

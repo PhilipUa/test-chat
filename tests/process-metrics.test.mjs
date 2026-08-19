@@ -35,11 +35,18 @@ describe('cpuPercentBetween', () => {
   });
 
   it('is zero for an idle interval', () => {
-    assert.equal(cpuPercentBetween({ user: 500, system: 500 }, { user: 500, system: 500 }, 1_000), 0);
+    assert.equal(
+      cpuPercentBetween({ user: 500, system: 500 }, { user: 500, system: 500 }, 1_000),
+      0,
+    );
   });
 
   it('can exceed 100 when worker threads are busy, rather than clamping a real signal away', () => {
-    const percent = cpuPercentBetween({ user: 0, system: 0 }, { user: 2_000_000, system: 0 }, 1_000);
+    const percent = cpuPercentBetween(
+      { user: 0, system: 0 },
+      { user: 2_000_000, system: 0 },
+      1_000,
+    );
 
     assert.equal(percent, 200);
   });

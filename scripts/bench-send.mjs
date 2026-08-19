@@ -71,7 +71,12 @@ const sends = [];
 for (const conversationId of conversations) {
   for (const senderId of SENDERS) {
     for (let i = 0; i < PER_PAIR && sends.length < TARGET; i++) {
-      sends.push({ conversationId, senderId, body: `bench ${i}`, clientId: `bench-${conversationId}-${senderId}-${i}-${Date.now()}` });
+      sends.push({
+        conversationId,
+        senderId,
+        body: `bench ${i}`,
+        clientId: `bench-${conversationId}-${senderId}-${i}-${Date.now()}`,
+      });
     }
   }
 }

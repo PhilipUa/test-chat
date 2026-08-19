@@ -46,7 +46,7 @@ export async function waitForRedis(retries = 30): Promise<void> {
       await new Promise((r) => setTimeout(r, 1_000));
     }
   }
-  throw new Error(`redis not reachable: ${lastErr}`);
+  throw new Error(`redis not reachable: ${String(lastErr)}`, { cause: lastErr });
 }
 
 export async function closeRedis(): Promise<void> {

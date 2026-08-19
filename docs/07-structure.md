@@ -54,6 +54,9 @@ src/
 
   controllers/    read the request, call a service, shape the response. Nothing else.
     {conversations,messages,search,users,health}.controller.ts
+    respond.ts    the success side of the response surface: ok / created / createdOrOk.
+                  (the error side is middleware/error-handler.ts, which is why a 400 looks
+                  the same wherever it is thrown from)
 
   middleware/     cross-cutting concerns
     async-handler.ts        Express 4 doesn't catch async rejections; this is why it stays up
@@ -61,12 +64,18 @@ src/
     require-actor.ts        who is acting → res.locals.actorId  ← real auth plugs in here
     require-participant.ts  membership check → 403/404
     rate-limit.ts           the limiter and the 429 shape, once
+    validate.ts             Zod schema validation as middleware — 400s before quota is charged
     locals.ts               typed res.locals, with accessors that throw on a wiring mistake
 
-  config.ts / config/      settings, and the rate-limit rule loader that reads rate-limit.config.json
-  validation/parse.ts       request value parsers (int, intOr, nonEmptyString, …)
-  services/                 the domain. Unchanged, and still knows nothing about HTTP.
-  ws/  db/  util/           unchanged
+  config.ts / config/      settings, and the rate-limit rule defaults + env-override resolver
+  validation/schemas.ts     the request boundary: one Zod schema per route, wired in the route table
+  services/                 the domain: policy only. Calls repositories, never a DB client.
+  repositories/             all database access, via Prisma — one module per aggregate, plain data
+                            in and out, no business logic. Raw escape hatches (the inbox summary
+                            SQL, $text/prefix search) live here, documented at the call site.
+  db/                       the Prisma clients, their lifecycle, and the boot-time migrate runner
+  generated/                Prisma clients (gitignored; `npm run prisma:generate`)
+  ws/  util/                unchanged
 ```
 
 Two boundaries worth stating, because they're what keeps this from being folders-for-their-own-sake:

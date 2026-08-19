@@ -14,7 +14,11 @@ import { KNOWN_SIGNALS, decideScale, validateRules } from '../scripts/autoscale-
  *    identical to a quiet system.
  */
 
-const replica = (connections, cpuPercent = 0, memoryMb = 0) => ({ connections, cpuPercent, memoryMb });
+const replica = (connections, cpuPercent = 0, memoryMb = 0) => ({
+  connections,
+  cpuPercent,
+  memoryMb,
+});
 
 /** Rules mirroring autoscale.config.json, so the tests exercise the shipped shape. */
 const connectionsRule = { signal: 'connections', up: 100, down: 40 };
@@ -54,7 +58,10 @@ describe('decideScale · a single connections rule', () => {
   });
 
   it('removes a replica when the signal is below the down watermark', () => {
-    const d = decide({ replicas: 4, metrics: [replica(20), replica(20), replica(20), replica(20)] });
+    const d = decide({
+      replicas: 4,
+      metrics: [replica(20), replica(20), replica(20), replica(20)],
+    });
 
     assert.equal(d.target, 3);
   });
@@ -118,7 +125,12 @@ describe('decideScale · choosing the signal', () => {
     // A typo'd signal that silently disabled the rule would be indistinguishable from a quiet system —
     // the worst way for a scaler to fail.
     assert.throws(
-      () => decide({ rules: [{ signal: 'diskio', up: 10, down: 1 }], replicas: 3, metrics: [replica(0)] }),
+      () =>
+        decide({
+          rules: [{ signal: 'diskio', up: 10, down: 1 }],
+          replicas: 3,
+          metrics: [replica(0)],
+        }),
       /diskio/,
     );
   });
@@ -239,7 +251,7 @@ describe('validateRules', () => {
 
   it('rejects an empty rule set instead of scaling on nothing', () => {
     assert.equal(validateRules([]).length, 1);
-    assert.match(validateRules([]) [0], /at least one/);
+    assert.match(validateRules([])[0], /at least one/);
   });
 
   it('rejects a signal it does not know, and says what it does know', () => {
@@ -250,7 +262,10 @@ describe('validateRules', () => {
   });
 
   it('rejects an aggregate it does not know', () => {
-    assert.match(validateRules([{ signal: 'cpu', up: 70, down: 20, aggregate: 'median' }])[0], /median/);
+    assert.match(
+      validateRules([{ signal: 'cpu', up: 70, down: 20, aggregate: 'median' }])[0],
+      /median/,
+    );
   });
 
   it('rejects watermarks that touch, because that is an oscillator', () => {

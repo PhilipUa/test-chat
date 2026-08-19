@@ -2,10 +2,10 @@ services:
   envoy:
     image: envoyproxy/envoy:v1.31-latest
     ports:
-      - "3000:3000"
+      - '3000:3000'
       # Envoy's admin interface. `curl localhost:9901/clusters` shows which api replicas it has
       # actually discovered, which is the first thing you want when scaling.
-      - "9901:9901"
+      - '9901:9901'
     volumes:
       - ./docker/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
     depends_on: [api]
@@ -22,7 +22,7 @@ services:
     command: node --import tsx src/index.ts
     restart: on-failure
     env_file: .env
-    expose: ["3000"]
+    expose: ['3000']
     # Scaled with `docker compose up -d --scale api=3`; realtime state is shared through Redis
     # rather than held in process memory, so replicas are interchangeable.
     depends_on:
@@ -43,12 +43,16 @@ services:
       - ./tests:/app/tests
       - ./package.json:/app/package.json:ro
       - ./tsconfig.json:/app/tsconfig.json:ro
-      # Mounted, not just baked in by the image build: the point of putting the rate limits in a file
-      # is that editing the file changes them, and `docker compose restart api` is a much better loop
-      # for retuning a limit than a rebuild.
-      - ./rate-limit.config.json:/app/rate-limit.config.json:ro
+      # The Prisma schemas and migrations, which the boot-time `prisma migrate deploy` reads.
+      - ./prisma:/app/prisma:ro
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -62,7 +66,7 @@ services:
       context: .
       dockerfile: docker/app/Dockerfile
     command: npm run seed
-    restart: "no"
+    restart: 'no'
     env_file: .env
     # Only the source is bind-mounted, so /app/node_modules stays the one baked into the image.
     # The original mounted `./:/app` and papered over the resulting empty node_modules with an
@@ -77,10 +81,8 @@ services:
       - ./tests:/app/tests
       - ./package.json:/app/package.json:ro
       - ./tsconfig.json:/app/tsconfig.json:ro
-      # Mounted, not just baked in by the image build: the point of putting the rate limits in a file
-      # is that editing the file changes them, and `docker compose restart api` is a much better loop
-      # for retuning a limit than a rebuild.
-      - ./rate-limit.config.json:/app/rate-limit.config.json:ro
+      # The Prisma schemas and migrations, which the boot-time `prisma migrate deploy` reads.
+      - ./prisma:/app/prisma:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -94,12 +96,13 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: relay
-    ports: ["3306:3306"]
+    ports: ['3306:3306']
+    # No docker-entrypoint-initdb.d script any more: the schema comes from Prisma Migrate at boot
+    # and the demo data from the seed service, so fresh and existing volumes take the same path.
     volumes:
-      - ./docker/db/mysql.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-uroot', '-proot']
       interval: 5s
       timeout: 5s
       retries: 20
@@ -107,13 +110,25 @@ services:
 
   mongo:
     image: mongo:7
-    ports: ["27017:27017"]
+    # Single-node replica set: Prisma's Mongo connector requires one (it runs writes through
+    # transactions). An existing standalone volume upgrades in place — rs.initiate() on the first
+    # health check adopts the data as-is.
+    command: ['mongod', '--replSet', 'rs0', '--bind_ip_all']
+    ports: ['27017:27017']
     volumes:
       - mongo_data:/data/db
     # Previously `condition: service_started`, which only waits for the container to exist — a
-    # slow Mongo start was a race the app had to retry its way out of.
+    # slow Mongo start was a race the app had to retry its way out of. The healthcheck also
+    # initiates the replica set the first time, so no separate init container is needed.
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      test:
+        [
+          'CMD',
+          'mongosh',
+          '--quiet',
+          '--eval',
+          "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }",
+        ]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -121,11 +136,11 @@ services:
 
   redis:
     image: redis:7
-    expose: ["6379"]
+    expose: ['6379']
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 3s
       retries: 20

@@ -4,6 +4,7 @@ import { requestsPerMinute } from '../middleware/request-rate.ts';
 import { memoryMbOf, startCpuSampling } from '../util/process-metrics.ts';
 import { withFallback } from '../util/resilience.ts';
 import { hubStats } from '../ws/hub.ts';
+import { ok } from './respond.ts';
 
 /**
  * Readiness, and a window into which instance you're talking to.
@@ -31,7 +32,7 @@ export async function health(_req: Request, res: Response): Promise<void> {
     return true;
   });
 
-  res.json({
+  ok(res, {
     ok: true,
     redis: redisOk,
     startedAt,

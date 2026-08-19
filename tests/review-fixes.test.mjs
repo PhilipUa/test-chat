@@ -58,7 +58,14 @@ describe('a socket that closes while its subscribe is in flight', () => {
     const ws = new WebSocket(BASE.replace(/^http/, 'ws') + '/');
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('ws open timeout')), 10_000);
-      ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+      ws.addEventListener(
+        'open',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
     });
     ws.send(JSON.stringify({ type: 'subscribe', userId: 5, conversationIds: [conv.id] }));
     // Close straight away: the server is still inside the participant query.
@@ -242,7 +249,10 @@ describe('the subscribe acknowledgement', () => {
 
     const marker = unique('published-right-after-ack');
     const sent = await post('/api/messages', {
-      conversationId: conv.id, senderId: 2, body: marker, clientId: marker,
+      conversationId: conv.id,
+      senderId: 2,
+      body: marker,
+      clientId: marker,
     });
     assert.equal(sent.status, 201);
 

@@ -1,0 +1,83 @@
+// The MySQL half of the split store: users, conversations, membership, and message *rows*
+// (id, ordering, idempotency key). Message *bodies* live in Mongo — see ../mongo/schema.prisma
+// and docs/04-tradeoffs.md for why the store is split.
+
+generator client {
+  provider = "prisma-client-js"
+  // Under src/ on purpose: compose bind-mounts ./src, so the client generated on the host is the
+  // one the container runs. The Linux targets are the container's engines (arm64 for Apple-silicon
+  // Docker, x64 for CI); "native" is the host's.
+  output        = "../../src/generated/prisma-mysql"
+  binaryTargets = ["native", "linux-arm64-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("MYSQL_URL")
+  // No FOREIGN KEY constraints: the schema the old migration runner converged on has none, and
+  // existing volumes are baselined without running DDL — real FKs here would make fresh and
+  // existing installs drift. Relations are emulated client-side instead.
+  relationMode = "prisma"
+}
+
+model User {
+  id    Int    @id @default(autoincrement())
+  name  String @db.VarChar(100)
+  email String @unique(map: "uniq_users_email") @db.VarChar(190)
+
+  participants ConversationParticipant[]
+
+  @@map("users")
+}
+
+model Conversation {
+  id    Int    @id @default(autoincrement())
+  title String @db.VarChar(200)
+  /// dbgenerated, NOT @default(now()): Prisma evaluates now() client-side and sends milliseconds,
+  /// which MySQL *rounds* into this TIMESTAMP(0) column — putting created_at up to half a second
+  /// in the future and breaking the inbox's activity ordering for a conversation that receives a
+  /// message immediately after creation. The DB default truncates, like the old code.
+  createdAt DateTime? @default(dbgenerated("CURRENT_TIMESTAMP(0)")) @map("created_at") @db.Timestamp(0)
+
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  @@map("conversations")
+}
+
+model ConversationParticipant {
+  conversationId Int @map("conversation_id")
+  userId         Int @map("user_id")
+  /// Server-side unread watermark. Monotonic — only ever moved forward (see
+  /// repositories/conversations.repository.ts).
+  lastReadMessageId BigInt @default(0) @map("last_read_message_id")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@id([conversationId, userId])
+  // The PK is prefixed by conversation_id, so looking a user's conversations up by user_id
+  // (which the conversation list does) had no usable index.
+  @@index([userId], map: "idx_participants_user")
+  @@map("conversation_participants")
+}
+
+model Message {
+  id             BigInt  @id @default(autoincrement())
+  conversationId Int     @map("conversation_id")
+  senderId       Int     @map("sender_id")
+  clientId       String? @map("client_id") @db.VarChar(64)
+  /// DATETIME(3): one timestamp is generated in the write path and stored in both MySQL and
+  /// Mongo, which needs millisecond precision to round-trip identically.
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  // Every query in the app filters by conversation_id; covering (conversation_id, id) also turns
+  // `ORDER BY id` and `MAX(id)` into index seeks.
+  @@index([conversationId, id], map: "idx_messages_conversation")
+  // Makes a retried send idempotent. NULLs don't collide in a MySQL unique index, so messages
+  // sent without a client id are simply not deduplicated.
+  @@unique([conversationId, clientId], map: "uniq_messages_client_id")
+  @@map("messages")
+}

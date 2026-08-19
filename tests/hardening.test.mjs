@@ -6,6 +6,7 @@ import {
   get,
   post,
   seedMessages,
+  sendMessage,
   sleep,
   unique,
   waitForApi,
@@ -76,16 +77,25 @@ describe('read paths are rate limited too (sends were the only metered endpoint)
     // the limit means exhausting somebody's allowance, and nothing else in the suite reads as user 3.
     const conv = await freshConversation([3, 1]);
 
+    // Batched with Promise.all, not one awaited GET at a time: 100+ serial round trips through
+    // Envoy, Express, MySQL, Redis and Mongo take long enough on a loaded stack that the sliding
+    // window ages entries out as fast as the loop adds them, and the limit never trips. Concurrent
+    // batches land inside the window regardless of per-request latency — and cut ~100 serial round
+    // trips of wall clock from every suite run.
     let limited;
     let accepted = 0;
-    for (let i = 0; i < 200; i++) {
-      const res = await get(`/api/messages?conversationId=${conv.id}&userId=3`);
-      if (res.status === 429) {
-        limited = res;
-        break;
+    for (let batch = 0; batch < 8 && !limited; batch++) {
+      const results = await Promise.all(
+        Array.from({ length: 25 }, () => get(`/api/messages?conversationId=${conv.id}&userId=3`)),
+      );
+      for (const res of results) {
+        if (res.status === 429) {
+          limited ??= res;
+        } else {
+          assert.equal(res.status, 200);
+          accepted++;
+        }
       }
-      assert.equal(res.status, 200);
-      accepted++;
     }
 
     assert.ok(limited, 'expected list reads to be rate limited');
@@ -105,7 +115,11 @@ describe('read paths are rate limited too (sends were the only metered endpoint)
     const forbidden = await get(`/api/messages?conversationId=${conv.id}&userId=3`);
 
     assert.equal(forbidden.status, 403);
-    assert.equal(forbidden.headers.get('x-ratelimit-limit'), null, 'a 403 should carry no quota headers');
+    assert.equal(
+      forbidden.headers.get('x-ratelimit-limit'),
+      null,
+      'a 403 should carry no quota headers',
+    );
   });
 
   it('accepts offset=0, which is what a first page asks for', async () => {
@@ -183,14 +197,76 @@ describe('search: paging, filters, and the indexed prefix path', () => {
     assert.equal(nothing.body.results.length, 0);
   });
 
+  it('finds a misspelled word, which neither the text index nor a prefix can reach', async () => {
+    // $text matches whole words and the prefix path is anchored, so a wrong keystroke — especially
+    // in the first character — is the case where both earlier strategies return nothing at all.
+    const conv = await freshConversation();
+    const word = 'kaleidoscope';
+    await sendMessage({
+      conversationId: conv.id,
+      senderId: 1,
+      body: `a message about ${word} patterns`,
+      clientId: unique('fuzzy'),
+    });
+
+    // Transposed characters in the middle.
+    const transposed = await get(`/api/search?q=kaledioscope&userId=1`);
+    assert.equal(
+      transposed.body.matchedBy,
+      'fuzzy',
+      'a transposition should fall through to fuzzy',
+    );
+    assert.ok(
+      transposed.body.results.some((r) => r.body.includes(word)),
+      'the misspelled query should still find the message',
+    );
+
+    // A wrong first character, which anchored prefix matching can never recover from.
+    const firstChar = await get(`/api/search?q=maleidoscope&userId=1`);
+    assert.equal(firstChar.body.matchedBy, 'fuzzy');
+    assert.ok(
+      firstChar.body.results.some((r) => r.body.includes(word)),
+      'a first-character typo is exactly what the trigram index exists for',
+    );
+
+    // Still bounded: a word that merely shares trigrams is not a match.
+    const unrelated = await get(`/api/search?q=zzqqxx${Date.now()}&userId=1`);
+    assert.equal(unrelated.body.matchedBy, 'none', 'fuzzy must not turn into "matches everything"');
+  });
+
+  it('does not let fuzzy matching escape the caller’s conversations', async () => {
+    // The scope filter is applied in the Mongo query itself, but fuzzy is the newest path into it,
+    // so it gets its own check: a typo must not become a way to read someone else's messages.
+    const conv = await freshConversation([1, 2]);
+    const secret = 'quicksilverfox';
+    await sendMessage({
+      conversationId: conv.id,
+      senderId: 1,
+      body: `${secret} lives here`,
+      clientId: unique('fuzzy-scope'),
+    });
+
+    const asOutsider = await get(`/api/search?q=quicksilverfx&userId=3`);
+    assert.ok(
+      !asOutsider.body.results.some((r) => r.body.includes(secret)),
+      'a non-participant must not reach the message through a fuzzy query',
+    );
+  });
+
   it('filters by sender and by date range', async () => {
     const conv = await freshConversation([1, 2]);
     const token = `filtertoken${Date.now()}`;
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 1, body: `${token} from alice`, clientId: unique('f'),
+      conversationId: conv.id,
+      senderId: 1,
+      body: `${token} from alice`,
+      clientId: unique('f'),
     });
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 2, body: `${token} from bob`, clientId: unique('f'),
+      conversationId: conv.id,
+      senderId: 2,
+      body: `${token} from bob`,
+      clientId: unique('f'),
     });
 
     const bySender = await get(`/api/search?q=${token}&userId=1&senderId=2`);
@@ -218,8 +294,15 @@ describe('catch-up after a realtime gap', () => {
     assert.equal(res.status, 200);
     const ids = res.body.messages.map((m) => m.id);
 
-    assert.ok(ids.every((id) => id > midpoint), 'every message must be newer than the cursor');
-    assert.deepEqual(ids, [...ids].sort((a, b) => a - b), 'must be oldest-first for appending');
+    assert.ok(
+      ids.every((id) => id > midpoint),
+      'every message must be newer than the cursor',
+    );
+    assert.deepEqual(
+      ids,
+      [...ids].sort((a, b) => a - b),
+      'must be oldest-first for appending',
+    );
     assert.equal(ids.length, 3);
     assert.equal(res.body.latestId, ids[ids.length - 1]);
   });
@@ -283,9 +366,7 @@ describe('presence', () => {
 
       // Presence is in the conversation list too, which is what renders the sidebar dot.
       const list = await conversationsOf(4);
-      const participant = list
-        .find((c) => c.id === conv.id)
-        .participants.find((p) => p.id === 5);
+      const participant = list.find((c) => c.id === conv.id).participants.find((p) => p.id === 5);
       assert.equal(participant.online, true);
 
       await erin.close();

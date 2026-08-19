@@ -28,9 +28,7 @@
   "intervalSeconds": 10,
   "cooldownSeconds": 30,
 
-  "rules": [
-    { "signal": "connections", "up": 2, "down": 1, "aggregate": "mean" }
-  ],
+  "rules": [{ "signal": "connections", "up": 2, "down": 1, "aggregate": "mean" }],
 
   "$examples": {
     "cpu only": [{ "signal": "cpu", "up": 70, "down": 20, "aggregate": "max" }],

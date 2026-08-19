@@ -1,6 +1,12 @@
-import type { Filter } from 'mongodb';
 import { config } from '../config.ts';
-import { messageBodies, type MessageBody } from '../db/mongo.ts';
+import {
+  searchFuzzyCandidates,
+  searchPrefix,
+  searchText,
+  type BodySearchDoc,
+  type BodySearchFilter,
+} from '../repositories/message-bodies.repository.ts';
+import { closestTokenDistance, editThresholdFor, trigramsOf } from '../util/text.ts';
 import { participantConversationIds } from './conversations/membership.ts';
 import { conversationTitles } from './conversations/queries.ts';
 
@@ -27,6 +33,9 @@ import { conversationTitles } from './conversations/queries.ts';
  * an index range scan, so cost tracks the number of matching tokens rather than the size of the
  * history. `/api/search` is rate limited as well — the two fixes are complementary, not
  * alternatives.
+ *
+ * The strategy order and the snippets are policy and live here; the Mongo queries themselves live
+ * in repositories/message-bodies.repository.ts.
  */
 
 export interface SearchHit {
@@ -36,7 +45,7 @@ export interface SearchHit {
   senderId: number;
   body: string;
   createdAt: string;
-  matchedBy: 'text' | 'prefix';
+  matchedBy: 'text' | 'prefix' | 'fuzzy';
 }
 
 export interface SearchResponse {
@@ -46,75 +55,85 @@ export interface SearchResponse {
   /** Offset to request for the next page, or null when there isn't one. */
   nextOffset: number | null;
   /** Which strategy produced these results — useful when a query behaves unexpectedly. */
-  matchedBy: 'text' | 'prefix' | 'none';
+  matchedBy: 'text' | 'prefix' | 'fuzzy' | 'none';
 }
-
-/** What a strategy returns: enough to build a SearchHit, plus the id. */
-type SearchDoc = Pick<MessageBody, '_id' | 'conversationId' | 'senderId' | 'body' | 'createdAt'>;
 
 interface Strategy {
   name: SearchHit['matchedBy'];
   run(
-    base: Filter<MessageBody>,
+    filter: BodySearchFilter,
     query: string,
     page: { limit: number; offset: number },
-  ): Promise<SearchDoc[]>;
+  ): Promise<BodySearchDoc[]>;
 }
 
 /**
- * Search strategies, most precise first.
- *
- * Tier 3.2 of the refactoring plan. These were two inline blocks with the fallback expressed as
- * `if (!docs.length)` control flow. As a list, the precedence is explicit and a third strategy
- * (fuzzy matching, or an external engine per docs/04-tradeoffs.md) is additive rather than another
- * branch in the middle of the function.
+ * Search strategies, most precise first. As a list, the precedence is explicit and a third
+ * strategy (fuzzy matching, or an external engine per docs/04-tradeoffs.md) is additive rather
+ * than another branch in the middle of the function.
  */
 const STRATEGIES: Strategy[] = [
   {
     // Mongo's text index: ranked by relevance, handles multiple terms, stemming ("meeting" matches
     // "meetings") and quoted phrases. The one that scales, because it's index-backed.
     name: 'text',
-    run: (base, query, { limit, offset }) =>
-      messageBodies()
-        .find(
-          { ...base, $text: { $search: query } },
-          {
-            projection: {
-              conversationId: 1,
-              senderId: 1,
-              body: 1,
-              createdAt: 1,
-              score: { $meta: 'textScore' },
-            },
-            sort: { score: { $meta: 'textScore' }, _id: -1 },
-            skip: offset,
-            limit,
-          },
-        )
-        .toArray(),
+    run: (filter, query, page) => searchText(filter, query, page),
   },
   {
-    // Indexed prefix match, for the partial words $text cannot see: "desig" finds nothing in
-    // "design", which reads as broken to anyone typing into a search box.
-    //
-    // Anchoring with ^ against the multikey bodyTokens index is what keeps this cheap. The first
-    // version was an unanchored regex over `body`, which examined every document in the caller's
-    // conversations — explain reported docsExamined 3203 for nReturned 0.
+    // Indexed prefix match, for the partial words $text cannot see.
     name: 'prefix',
-    run: async (base, query, { limit, offset }) => {
+    run: async (filter, query, page) => {
       const prefixes = prefixTermsFor(query);
       if (!prefixes.length) return [];
-      return messageBodies()
-        .find(
-          { ...base, $and: prefixes.map((p) => ({ bodyTokens: { $regex: p } })) },
-          {
-            projection: { conversationId: 1, senderId: 1, body: 1, createdAt: 1 },
-            sort: { _id: -1 },
-            skip: offset,
-            limit,
-          },
-        )
-        .toArray();
+      return searchPrefix(filter, prefixes, page);
+    },
+  },
+  {
+    // Typo tolerance, for the queries the first two strategies cannot reach at all: `$text` matches
+    // whole words and prefix matching is anchored, so a single wrong keystroke — especially in the
+    // first character — turns a real query into zero results.
+    //
+    // Two halves, split by what each is good at. Mongo narrows: messages sharing a trigram with the
+    // query come back through the multikey index, capped, so cost doesn't grow with history. Then
+    // ranking happens here, because "how close is close enough" is policy, not storage.
+    name: 'fuzzy',
+    run: async (filter, query, { limit, offset }) => {
+      const terms = queryTerms(query);
+      if (!terms.length) return [];
+
+      const trigrams = [...new Set(terms.flatMap(trigramsOf))];
+      const candidates = await searchFuzzyCandidates(
+        filter,
+        trigrams,
+        config.search.fuzzyCandidates,
+      );
+
+      // Score every candidate by its worst-matching term: a two-word query should not be satisfied
+      // by a message that only resembles one of them.
+      const scored = [];
+      for (const doc of candidates) {
+        let worst = 0;
+        for (const term of terms) {
+          const threshold = editThresholdFor(term);
+          const distance = closestTokenDistance(
+            term,
+            doc.body,
+            config.search.maxTokenLength,
+            config.search.maxTokensPerMessage,
+            threshold,
+          );
+          if (distance > threshold) {
+            worst = Number.POSITIVE_INFINITY;
+            break;
+          }
+          if (distance > worst) worst = distance;
+        }
+        if (Number.isFinite(worst)) scored.push({ doc, distance: worst });
+      }
+
+      // Closest first, then newest — the same tie-break the other strategies use.
+      scored.sort((a, b) => a.distance - b.distance || b.doc.id - a.doc.id);
+      return scored.slice(offset, offset + limit).map((hit) => hit.doc);
     },
   },
 ];
@@ -153,20 +172,18 @@ export async function searchMessages(
   }
   if (!scope.length) return empty;
 
-  const base: Filter<MessageBody> = { conversationId: { $in: scope } };
-  if (opts.senderId !== undefined) base.senderId = opts.senderId;
-  if (opts.from || opts.to) {
-    base.createdAt = {
-      ...(opts.from ? { $gte: opts.from } : {}),
-      ...(opts.to ? { $lte: opts.to } : {}),
-    };
-  }
+  const filter: BodySearchFilter = {
+    conversationIds: scope,
+    senderId: opts.senderId,
+    from: opts.from,
+    to: opts.to,
+  };
 
   // Try each strategy in order and take the first that finds anything.
-  let docs: SearchDoc[] = [];
+  let docs: BodySearchDoc[] = [];
   let matchedBy: SearchHit['matchedBy'] = 'text';
   for (const strategy of STRATEGIES) {
-    docs = await strategy.run(base, query, { limit: limit + 1, offset });
+    docs = await strategy.run(filter, query, { limit: limit + 1, offset });
     if (docs.length) {
       matchedBy = strategy.name;
       break;
@@ -186,33 +203,41 @@ export async function searchMessages(
     // Capped, so a client paging forever can't push `skip` somewhere expensive.
     nextOffset: hasMore && offset + limit < config.search.maxOffset ? offset + limit : null,
     results: page.map((d) => ({
-      messageId: Number(d._id),
+      messageId: d.id,
       conversationId: d.conversationId,
       conversationTitle: titles.get(d.conversationId) ?? `#${d.conversationId}`,
       senderId: d.senderId,
       // The UI renders this with textContent, so a snippet is plain text by design — no
       // highlight markup that would have to be trusted downstream.
       body: snippet(d.body, query),
-      createdAt: new Date(d.createdAt).toISOString(),
+      createdAt: d.createdAt.toISOString(),
       matchedBy,
     })),
   };
 }
 
 /**
- * Builds anchored prefix patterns for the query's terms.
+ * Builds anchored prefix patterns (as regex sources) for the query's terms.
  *
  * Anchoring with `^` is what lets Mongo use the `bodyTokens` index as a range scan; an unanchored
  * pattern would degrade back into examining every indexed token. Terms are escaped, so a query
  * full of regex metacharacters is a literal search rather than an injected pattern.
  */
-function prefixTermsFor(query: string): RegExp[] {
-  const terms = query
+function prefixTermsFor(query: string): string[] {
+  return queryTerms(query).map((t) => `^${escapeRegex(t)}`);
+}
+
+/**
+ * The query's search terms: lowercased, split like the indexer splits bodies, truncated to the
+ * indexed token length, and capped in number — more terms just multiply index lookups.
+ */
+function queryTerms(query: string): string[] {
+  return query
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean)
-    .slice(0, 5); // a handful of terms is plenty; more just multiplies index lookups
-  return terms.map((t) => new RegExp(`^${escapeRegex(t.slice(0, config.search.maxTokenLength))}`));
+    .slice(0, 5)
+    .map((t) => t.slice(0, config.search.maxTokenLength));
 }
 
 function escapeRegex(input: string): string {

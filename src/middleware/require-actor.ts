@@ -1,5 +1,5 @@
 import type { Request, RequestHandler } from 'express';
-import { int } from '../validation/parse.ts';
+import { parseId } from '../validation/schemas.ts';
 
 /**
  * Resolves which user a request is acting as, into `res.locals.actorId`.
@@ -10,14 +10,23 @@ import { int } from '../validation/parse.ts';
  */
 export type ActorSource = (req: Request) => unknown;
 
-export const fromBody = (field: string): ActorSource => (req) => req.body?.[field];
-export const fromQuery = (field: string): ActorSource => (req) => req.query?.[field];
-export const fromParam = (field: string): ActorSource => (req) => req.params?.[field];
+export const fromBody =
+  (field: string): ActorSource =>
+  (req) =>
+    (req.body as Record<string, unknown> | undefined)?.[field];
+export const fromQuery =
+  (field: string): ActorSource =>
+  (req) =>
+    req.query?.[field];
+export const fromParam =
+  (field: string): ActorSource =>
+  (req) =>
+    req.params?.[field];
 
 export function requireActor(source: ActorSource, field = 'userId'): RequestHandler {
   return (req, res, next) => {
     try {
-      res.locals.actorId = int(source(req), field);
+      res.locals.actorId = parseId(source(req), field);
       next();
     } catch (err) {
       next(err);

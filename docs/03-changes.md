@@ -190,8 +190,9 @@ as much as a bug. The sidebar is now built from DOM nodes; there is no `innerHTM
   sessions clear the badge too.
 - **Inbox ordered by recent activity** instead of `c.id ASC`, which put the conversation that just
   got a message at the bottom.
-- `timezone: 'Z'` on the MySQL pool — without it, mysql2 reads `DATETIME` in the server's local
-  timezone, which is how a message can appear to arrive an hour before it was sent.
+- `timezone: 'Z'` on the MySQL pool — without it, mysql2 read `DATETIME` in the server's local
+  timezone, which is how a message can appear to arrive an hour before it was sent. (Superseded:
+  the data layer now goes through Prisma, which treats MySQL date/time columns as UTC by design.)
 - Malformed WS frames validated (`NaN` was previously a valid subscription).
 
 ## Features built
@@ -225,21 +226,21 @@ Five buckets in total, same mechanism throughout — `send` (user + conversation
 discover replicas, and a typing *stop* frame is never dropped, or a throttled client would leave
 someone stuck as "typing".
 
-**The numbers live in [`rate-limit.config.json`](../rate-limit.config.json), not in code.** They are
-policy: what a limit should be is a judgement about a deployment, and asking someone to edit
-TypeScript or to guess five environment variable names to change it is the wrong shape. Same argument
-`autoscale.config.json` makes for scaling rules, so the file is deliberately its counterpart — every
-knob documented in a `$comment`, `$examples` to copy from, bind-mounted so a retune is an edit and a
-restart. What stays in code is which buckets exist and how each is keyed, because a key shape is a
-decision about what the limit protects.
+**The numbers are custom configs wired into the middleware in code.** Each route passes its rule —
+the numbers and the key shape — where the route is declared, so the limit, what it covers and the
+endpoint it protects sit together and the compiler checks the wiring. Defaults live in
+`src/config/rate-limit-rules.ts` next to the reasoning for each number; env vars (`RATE_LIMIT_MAX`
+and friends) override per deployment. An earlier iteration kept the numbers in a
+`rate-limit.config.json`, but the file was a second place for the numbers to live and every failure
+mode it grew — silently ignored typos, a bind mount decaying into an empty directory — came from the
+file existing at all.
 
-Precedence is env > file > built-in defaults, so a deployment can still override one rule without a
-commit. Validation is strict and fails startup: a limit of `0` rejects every request, `windowMs: 10`
-instead of `10000` meters a thousand times too loosely, and a rule misspelled `sends` looks
-configured while doing nothing — all three fail in a direction nobody notices, which is the worst
-property a protection mechanism can have. `src/config/rate-limit-rules.ts` resolves and validates as
-a pure function over (file, env), and `tests/rate-limit-config.test.mjs` covers it, including that
-the shipped file and its examples are valid against the loader that reads them.
+Precedence is env > built-in defaults, so a deployment can still override one rule without a commit.
+Validation is strict and fails startup: a limit of `0` rejects every request, a window of `10`
+instead of `10000` meters a thousand times too loosely — both fail in a direction nobody notices,
+which is the worst property a protection mechanism can have. `src/config/rate-limit-rules.ts`
+resolves and validates as a pure function over the environment, and
+`tests/rate-limit-config.test.mjs` covers it.
 
 ```
 send 1 -> 201  remaining=4
@@ -293,10 +294,12 @@ Verified in a real browser across two tabs — `screenshots/typing-indicator.png
 - **`tsc` had never been run here.** The source imports siblings as `./config.ts`, which is what
   `tsx` executes, but `allowImportingTsExtensions` wasn't set — so `tsc` errored on every import.
   Fixed, and `npm run typecheck` is clean.
-- **A migration runner** (`src/db/migrate.ts`). `docker/db/mysql.sql` only executes on a fresh
-  MySQL volume, so schema changes never reach an existing install — anyone already running the app
+- **A migration runner** (`src/db/migrate.ts`). `docker/db/mysql.sql` only executed on a fresh
+  MySQL volume, so schema changes never reached an existing install — anyone already running the app
   would silently keep the old schema, missing indexes and all. Migrations run at boot, are safe to
-  re-run, and take a named lock so `--scale api=3` boots cleanly.
+  re-run, and take a named lock so `--scale api=3` boots cleanly. (The hand-rolled runner has since
+  been replaced by Prisma Migrate — same boot-time contract; an existing install is baselined as
+  `0_init` and fresh volumes apply the real DDL. See `src/db/migrate.ts`.)
 - **Compose volumes.** The original mounted `./:/app` and papered over the resulting empty
   `node_modules` with an anonymous volume — which Compose carries across container recreation, so a
   dependency added to `package.json` never actually appeared. Only source directories are mounted
@@ -316,5 +319,60 @@ Verified in a real browser across two tabs — `screenshots/typing-indicator.png
   impossible to demo. `?userId=2` pins an identity.
 - Optimistic send with `clientId` reconciliation, so the composer feels immediate and the broadcast
   replaces the local echo rather than duplicating it.
+
+## The data layer: Prisma + repositories
+
+The raw `mysql2` queries and the `mongodb` driver are gone. Data access is now:
+
+- **Prisma for both stores.** One schema per datasource (`prisma/mysql`, `prisma/mongo`), two
+  generated clients. MySQL schema changes are real Prisma Migrate migrations, applied at boot with
+  the same operational contract the hand-rolled runner had (safe re-runs, `--scale api=3` boots
+  cleanly); an install that predates Prisma is baselined as `0_init` automatically. Mongo has no
+  Prisma Migrate, so its index set (including the `$text` index the schema DSL can't declare) is
+  still created idempotently at boot. Prisma's Mongo connector needs a replica set, so compose
+  runs Mongo as a single-node one — an existing volume upgrades in place.
+- **Repositories own every query** (`src/repositories/`, one module per aggregate). They return
+  plain domain shapes (`number` ids, not `BigInt`; no EJSON) and hold no business logic — the
+  403-vs-404 decision, send idempotency, the two-store write compensation, pagination shaping and
+  search strategy order all stay in `services/`, which no longer import a database client at all.
+- **Raw where Prisma can't say it, typed everywhere else.** Three documented escape hatches: the
+  inbox summary query (correlated `MAX(id)` join + `COALESCE` keyset) via `$queryRaw`, and the
+  `$text` / anchored-prefix / fuzzy searches plus the index backfill via `findRaw` /
+  `$runCommandRaw`, since Prisma's Mongo filters can't rank by text score or range-scan a list.
+
+One behavior nearly regressed in the port and is worth remembering: Prisma evaluates
+`@default(now())` client-side with millisecond precision, and MySQL *rounds* into `TIMESTAMP(0)` —
+which put a conversation's `created_at` up to half a second in the future and broke the inbox's
+activity ordering. `conversations.created_at` is `@default(dbgenerated(...))` for exactly this
+reason; the integration suite caught it.
+
+## Search: three strategies, most precise first
+
+`$text` for whole words, an anchored-prefix scan over `bodyTokens` for partial words, and — new —
+a **fuzzy** pass for the queries neither can reach at all: `$text` matches whole words and prefix
+matching is anchored, so one wrong keystroke, especially in the first character, turns a real query
+into zero results.
+
+Fuzzy runs *only* after the first two find nothing, so every query that works today keeps its exact
+behaviour and cost. It works the way prefix search does — index first, ranking second. Each token's
+three-character windows are stored in `bodyTrigrams` at write time, so a typo ("desgin") still
+shares windows with the original ("design") and the candidates come back through a multikey index.
+The service then ranks those candidates by Levenshtein distance, tolerating two edits for terms of
+five characters or more and one below that; short terms get nothing, because at distance two a
+four-letter word is a *different* word rather than a misspelling.
+
+Two measurements shaped the implementation, both on ~8,600 messages:
+
+- **The index hint is not optional.** Left to itself the planner prefers `conversation_recent` —
+  which also satisfies an `_id` ordering — and examines 1,039 documents to return 9. Hinted onto
+  the trigram index it examines 9. Storing trigrams only pays off if the index does the narrowing.
+- **No sort in the candidate query.** An ordering the index cannot serve forces a blocking sort
+  over every match before the limit applies, which is unbounded work for a common trigram. The
+  service ranks by distance anyway, so any ordering there would be discarded.
+
+This is a bounded-cost heuristic, not a ranked fuzzy engine: the candidate fetch is capped, so a
+typo'd query costs the same whether history holds a hundred messages or a million. The argument in
+[`04-tradeoffs.md`](04-tradeoffs.md) still stands — a production deployment with real search
+requirements wants a dedicated engine rather than three strategies in a service.
 
 Deliberately left alone, with reasoning, in [`04-tradeoffs.md`](04-tradeoffs.md).

@@ -26,8 +26,7 @@ export function logThrottled(label: string, message: string): void {
   console.error(`[${label}] ${message}`);
 }
 
-const describe = (err: unknown): string =>
-  err instanceof Error ? err.message : String(err);
+const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**
  * Runs `fn`, and returns `fallback` if it throws.

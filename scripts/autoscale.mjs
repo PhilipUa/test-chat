@@ -44,7 +44,11 @@ const numberOf = (name) => (argOf(name) === undefined ? undefined : Number(argOf
 const has = (name) => process.argv.includes(`--${name}`);
 
 if (has('help')) {
-  console.log(readFileSync(new URL(import.meta.url), 'utf8').split('*/')[0].replace(/^\/\*\*?|^ \* ?/gm, ''));
+  console.log(
+    readFileSync(new URL(import.meta.url), 'utf8')
+      .split('*/')[0]
+      .replace(/^\/\*\*?|^ \* ?/gm, ''),
+  );
   process.exit(0);
 }
 
@@ -78,7 +82,9 @@ function resolveRules() {
     // A flag alongside a multi-rule config would be ambiguous about which rule it meant, so say so rather
     // than guessing.
     if ((numberOf('up') !== undefined || numberOf('down') !== undefined) && rules.length > 1) {
-      console.error('--up/--down with more than one configured rule is ambiguous; use --signal too');
+      console.error(
+        '--up/--down with more than one configured rule is ambiguous; use --signal too',
+      );
       process.exit(2);
     }
     return rules.map((rule) => ({
@@ -161,7 +167,8 @@ async function sampleMetrics(samples = 24) {
   return byInstance;
 }
 
-const scaleTo = (n) => sh('docker', ['compose', 'up', '-d', '--no-deps', '--scale', `api=${n}`, 'api']);
+const scaleTo = (n) =>
+  sh('docker', ['compose', 'up', '-d', '--no-deps', '--scale', `api=${n}`, 'api']);
 
 /** One line per replica, in the units of whichever signals are configured. */
 function describeReplicas(byInstance) {
@@ -230,7 +237,9 @@ log(
     `every ${config.intervalMs / 1000}s, cooldown ${config.cooldownMs / 1000}s` +
     (dryRun ? ' (dry run)' : ''),
 );
-log(`  rules: ${ruleSummary}${argOf('config') || fileConfig.rules ? ` (from ${configPath})` : ' (built-in defaults)'}`);
+log(
+  `  rules: ${ruleSummary}${argOf('config') || fileConfig.rules ? ` (from ${configPath})` : ' (built-in defaults)'}`,
+);
 
 if (once) {
   await tick();

@@ -1,0 +1,39 @@
+// The Mongo half of the split store: message bodies, keyed by the MySQL message id.
+//
+// There is no Prisma Migrate for MongoDB; the indexes this collection needs (including the $text
+// index, which this DSL cannot declare) are created idempotently at boot — see src/db/mongo.ts.
+// Prisma's Mongo connector requires the server to run as a replica set (docker-compose.yml runs a
+// single-node one).
+
+generator client {
+  provider = "prisma-client-js"
+  // Under src/ on purpose — same reasoning as the MySQL schema: ./src is bind-mounted, so the
+  // host-generated client is the one the container runs.
+  output        = "../../src/generated/prisma-mongo"
+  binaryTargets = ["native", "linux-arm64-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("MONGO_URL")
+}
+
+model MessageBody {
+  /// The MySQL message id — the join key between the two stores.
+  id             Int      @id @map("_id")
+  conversationId Int
+  senderId       Int
+  body           String
+  signature      String
+  createdAt      DateTime
+  /// Lowercased word tokens from `body`, so partial-word search is an index range scan rather
+  /// than a collection scan. Documents written before the field existed lack it until the boot
+  /// backfill reaches them; Prisma reads a missing list as [].
+  bodyTokens String[]
+  /// Three-character windows of every token, so a *misspelled* query can still reach this message
+  /// through an index. Prefix search cannot recover from a typo in the first character; a shared
+  /// trigram can. Backfilled at boot alongside bodyTokens.
+  bodyTrigrams String[]
+
+  @@map("message_bodies")
+}

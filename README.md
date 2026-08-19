@@ -65,7 +65,8 @@ shows which replicas Envoy has discovered, and `/api/health` reports which one s
 ### Rate limits
 
 Five metered buckets, all one mechanism — an atomic sliding window in Redis, so a limit holds across
-replicas — and all set in [`rate-limit.config.json`](rate-limit.config.json):
+replicas. Defaults live in code ([`src/config/rate-limit-rules.ts`](src/config/rate-limit-rules.ts));
+env vars (`RATE_LIMIT_MAX` and friends, see `.env.example`) override per deployment:
 
 | bucket | endpoint | keyed by | default |
 |---|---|---|---|
@@ -231,6 +232,13 @@ fallback I'd added to make partial-word search work was examining every message 
 history to return nothing — so `?q=zzzz1`, `?q=zzzz2`, … was an unmetered way to generate unbounded
 read load. Fixed on both sides: search is metered, and the fallback is now an anchored prefix match
 against an index, which took `docsExamined` from 3203 to 0 on a query that matches nothing.
+
+Search now runs three strategies, most precise first: `$text` for whole words, an anchored prefix
+scan for partial ones, and a trigram-backed **fuzzy** pass for misspellings — the case where the
+first two return nothing at all, since `$text` matches whole words and a prefix cannot survive a
+typo in the first character. Each stays index-backed; see
+[`docs/03-changes.md`](docs/03-changes.md#search-three-strategies-most-precise-first) for the
+measurements, including why the fuzzy query carries an explicit index hint.
 
 Also: a realtime gap the client could never detect (Redis pub/sub is at-most-once, and the
 WebSocket stays open through a Redis outage, so the browser silently stopped receiving — now the

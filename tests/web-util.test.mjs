@@ -39,7 +39,10 @@ describe('orderByActivity', () => {
       conv(3, '2026-08-18T11:00:00.000Z'),
     ];
 
-    assert.deepEqual(orderByActivity(list).map((c) => c.id), [2, 3, 1]);
+    assert.deepEqual(
+      orderByActivity(list).map((c) => c.id),
+      [2, 3, 1],
+    );
   });
 
   it('breaks ties on id descending, the way the server does', () => {
@@ -48,7 +51,10 @@ describe('orderByActivity', () => {
     const same = '2026-08-18T10:00:00.000Z';
     const list = [conv(7, same), conv(21, same), conv(13, same)];
 
-    assert.deepEqual(orderByActivity(list).map((c) => c.id), [21, 13, 7]);
+    assert.deepEqual(
+      orderByActivity(list).map((c) => c.id),
+      [21, 13, 7],
+    );
   });
 
   it('does not mutate the list it was given', () => {
@@ -56,7 +62,10 @@ describe('orderByActivity', () => {
 
     orderByActivity(list);
 
-    assert.deepEqual(list.map((c) => c.id), [1, 2]);
+    assert.deepEqual(
+      list.map((c) => c.id),
+      [1, 2],
+    );
   });
 
   it('falls back to the last message when there is no activity timestamp', () => {
@@ -65,7 +74,10 @@ describe('orderByActivity', () => {
       { id: 2, lastMessage: { createdAt: '2026-08-18T12:00:00.000Z' } },
     ];
 
-    assert.deepEqual(orderByActivity(list).map((c) => c.id), [2, 1]);
+    assert.deepEqual(
+      orderByActivity(list).map((c) => c.id),
+      [2, 1],
+    );
   });
 });
 
@@ -125,12 +137,21 @@ describe('mergeConversations', () => {
 
   it('follows the page for which conversations exist and in what order', () => {
     // The server decides membership and paging; merging is only about per-conversation freshness.
-    const existing = [held(1, 12, '2026-08-18T12:00:00.000Z'), held(9, 3, '2026-08-18T09:00:00.000Z')];
-    const incoming = [held(2, 5, '2026-08-18T10:00:00.000Z'), held(1, 11, '2026-08-18T11:00:00.000Z')];
+    const existing = [
+      held(1, 12, '2026-08-18T12:00:00.000Z'),
+      held(9, 3, '2026-08-18T09:00:00.000Z'),
+    ];
+    const incoming = [
+      held(2, 5, '2026-08-18T10:00:00.000Z'),
+      held(1, 11, '2026-08-18T11:00:00.000Z'),
+    ];
 
     const merged = mergeConversations(existing, incoming);
 
-    assert.deepEqual(merged.map((c) => c.id), [2, 1]);
+    assert.deepEqual(
+      merged.map((c) => c.id),
+      [2, 1],
+    );
   });
 
   it('does not let a stale page walk the message count backwards', () => {

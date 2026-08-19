@@ -1,4 +1,4 @@
-import { after, before, describe, it } from 'node:test';
+import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   conversationsOf,
@@ -7,7 +7,6 @@ import {
   instanceFingerprints,
   post,
   seedMessages,
-  sleep,
   unique,
   waitForApi,
   wsClient,
@@ -55,7 +54,10 @@ describe('finding A — a failing request must not kill the process', () => {
 
     // The conversation insert was rolled back, so user 1 has no conversation with this title.
     const list = await conversationsOf(1);
-    assert.equal(list.some((c) => c.title === title), false);
+    assert.equal(
+      list.some((c) => c.title === title),
+      false,
+    );
   });
 
   it('returns 400 for malformed JSON rather than dropping the connection', async () => {
@@ -82,7 +84,9 @@ describe('finding A — a failing request must not kill the process', () => {
     // A body within the parser limit but over the message length limit is our own 400.
     const conv = await freshConversation();
     const tooLong = await post('/api/messages', {
-      conversationId: conv.id, senderId: 1, body: 'a'.repeat(10_000),
+      conversationId: conv.id,
+      senderId: 1,
+      body: 'a'.repeat(10_000),
     });
     assert.equal(tooLong.status, 400);
     assert.match(tooLong.body.error, /at most/);
@@ -137,19 +141,31 @@ describe('finding D — sends are idempotent on clientId', () => {
     await post('/api/messages', { conversationId: conv.id, senderId: 1, body: 'same text' });
     await post('/api/messages', { conversationId: conv.id, senderId: 1, body: 'same text' });
     const page = await get(`/api/messages?conversationId=${conv.id}&userId=1`);
-    assert.equal(page.body.messages.length, 2, 'NULL client_id must not collide in the unique index');
+    assert.equal(
+      page.body.messages.length,
+      2,
+      'NULL client_id must not collide in the unique index',
+    );
   });
 });
 
 describe('finding E — authorization', () => {
   it('refuses a send into a conversation the sender is not part of', async () => {
     const conv = await freshConversation([1, 2]);
-    const res = await post('/api/messages', { conversationId: conv.id, senderId: 3, body: 'gatecrash' });
+    const res = await post('/api/messages', {
+      conversationId: conv.id,
+      senderId: 3,
+      body: 'gatecrash',
+    });
     assert.equal(res.status, 403);
   });
 
   it('refuses a send to a conversation that does not exist', async () => {
-    const res = await post('/api/messages', { conversationId: 999999, senderId: 1, body: 'orphan' });
+    const res = await post('/api/messages', {
+      conversationId: 999999,
+      senderId: 1,
+      body: 'orphan',
+    });
     assert.equal(res.status, 404);
   });
 
@@ -238,7 +254,10 @@ describe('finding J — pagination', () => {
 
     // Pages must not overlap.
     const firstIds = new Set(firstPage.body.messages.map((m) => m.id));
-    assert.equal(older.body.messages.some((m) => firstIds.has(m.id)), false);
+    assert.equal(
+      older.body.messages.some((m) => firstIds.has(m.id)),
+      false,
+    );
   });
 
   it('caps an oversized limit rather than dumping the conversation', async () => {
@@ -257,7 +276,10 @@ describe('input validation', () => {
       ['empty body', { conversationId: conv.id, senderId: 1, body: '   ' }],
       ['non-numeric conversationId', { conversationId: 'abc', senderId: 1, body: 'x' }],
       ['negative senderId', { conversationId: conv.id, senderId: -1, body: 'x' }],
-      ['oversized clientId', { conversationId: conv.id, senderId: 1, body: 'x', clientId: 'c'.repeat(200) }],
+      [
+        'oversized clientId',
+        { conversationId: conv.id, senderId: 1, body: 'x', clientId: 'c'.repeat(200) },
+      ],
     ];
     for (const [name, payload] of cases) {
       const res = await post('/api/messages', payload);

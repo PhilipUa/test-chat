@@ -1,12 +1,17 @@
-import { config } from '../../config.ts';
-import { messageBodiesById } from '../../db/mongo.ts';
-import { queryRows, sqlList } from '../../db/mysql.ts';
+import {
+  participantNameRows,
+  summaryRows,
+  titlesByIds,
+} from '../../repositories/conversations.repository.ts';
+import { bodiesByIds } from '../../repositories/message-bodies.repository.ts';
 import { onlineAmong } from '../presence.ts';
 
 /**
  * Conversation read models — the inbox list and its supporting lookups.
  *
- * Split out of services/conversations.ts, which mixed these with writes and authorization.
+ * The shaping (paging, cursors, presence decoration) lives here; the queries live in
+ * repositories/conversations.repository.ts, including the one raw-SQL inbox query whose history
+ * (a 101-round-trip N+1, then an unbounded response) is documented there and in docs/03-changes.md.
  */
 
 export interface LastMessage {
@@ -42,19 +47,6 @@ export interface ConversationSummary {
   participants: Participant[];
 }
 
-interface ConversationSummaryRow {
-  id: number;
-  title: string;
-  lastReadMessageId: number | null;
-  messageCount: number;
-  unreadCount: number;
-  lastMessageId: number | null;
-  lastSenderId: number | null;
-  lastCreatedAt: Date | null;
-  /** The value the inbox is ordered by: last message, or the conversation's own creation. */
-  activityAt: Date;
-}
-
 export interface ConversationPage {
   conversations: ConversationSummary[];
   hasMore: boolean;
@@ -87,99 +79,53 @@ export function decodeCursor(raw: string): ConversationCursor | undefined {
   return { activityMs, conversationId };
 }
 
-interface ParticipantRow {
-  conversationId: number;
-  id: number;
-  name: string;
-}
-
 /**
- * The inbox.
- *
- * This used to be the conversation rows plus *two* queries per conversation in a `for` loop — 101
- * round trips for 50 conversations, each a full table scan because `messages` had no index on
- * conversation_id. It's now one query whose correlated subqueries are index-only scans against
- * idx_messages_conversation, plus one batched Mongo lookup for the preview bodies and one query for
- * all participants.
- *
- * It is also paged. The N+1 was fixed but the bound was not, so this returned every conversation a
- * user is in — with two correlated subqueries each — and the client refetches it on every reconnect
- * and every resync. A user with 878 conversations was a 181 KB response on a path that runs whenever
- * realtime blips, and it degrades with message volume rather than conversation count.
+ * The inbox: one summary query, one batched Mongo lookup for the preview bodies, one query for
+ * all participants, one Redis lookup for presence — regardless of page size.
  */
 export async function listConversations(
   userId: number,
-  opts: { limit?: number; cursor?: ConversationCursor } = {},
+  // `limit` arrives already defaulted and clamped by the route schema — the one place page-size
+  // policy lives.
+  opts: { limit: number; cursor?: ConversationCursor },
 ): Promise<ConversationPage> {
-  const limit = Math.min(
-    opts.limit ?? config.conversations.defaultPageSize,
-    config.conversations.maxPageSize,
-  );
-
-  const params: unknown[] = [userId];
-  let keyset = '';
-  if (opts.cursor) {
-    // Row-wise comparison against the same expression the ORDER BY uses.
-    keyset = `AND (COALESCE(lm.created_at, c.created_at) < ?
-                OR (COALESCE(lm.created_at, c.created_at) = ? AND c.id < ?))`;
-    const at = new Date(opts.cursor.activityMs);
-    params.push(at, at, opts.cursor.conversationId);
-  }
-
-  // limit + 1 tells us whether there is another page without a second COUNT query.
-  const rows = await queryRows<ConversationSummaryRow>(
-    `SELECT
-       c.id,
-       c.title,
-       p.last_read_message_id                                         AS lastReadMessageId,
-       (SELECT COUNT(*) FROM messages m
-         WHERE m.conversation_id = c.id)                              AS messageCount,
-       (SELECT COUNT(*) FROM messages m
-         WHERE m.conversation_id = c.id
-           AND m.id > p.last_read_message_id
-           AND m.sender_id <> p.user_id)                              AS unreadCount,
-       lm.id                                                          AS lastMessageId,
-       lm.sender_id                                                   AS lastSenderId,
-       lm.created_at                                                  AS lastCreatedAt,
-       COALESCE(lm.created_at, c.created_at)                          AS activityAt
-     FROM conversations c
-     JOIN conversation_participants p
-       ON p.conversation_id = c.id AND p.user_id = ?
-     LEFT JOIN messages lm
-       ON lm.id = (SELECT MAX(m2.id) FROM messages m2 WHERE m2.conversation_id = c.id)
-     WHERE 1 = 1 ${keyset}
-     ORDER BY COALESCE(lm.created_at, c.created_at) DESC, c.id DESC
-     LIMIT ${limit + 1}`,
-    params,
+  const { limit } = opts;
+  const rows = await summaryRows(
+    userId,
+    limit,
+    opts.cursor
+      ? { activityAt: new Date(opts.cursor.activityMs), conversationId: opts.cursor.conversationId }
+      : undefined,
   );
 
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
   const last = page[page.length - 1];
 
-  const lastIds = page.map((r) => Number(r.lastMessageId)).filter((id) => Number.isInteger(id));
-  const bodyById = await messageBodiesById(lastIds);
+  const lastIds = page.map((r) => r.lastMessageId).filter((id): id is number => id !== null);
+  const bodyById = await bodiesByIds(lastIds);
   const participantsByConversation = await participantsFor(
-    page.map((r) => Number(r.id)),
+    page.map((r) => r.id),
     userId,
   );
 
   const conversations = page.map((r) => ({
-    id: Number(r.id),
+    id: r.id,
     title: r.title,
-    messageCount: Number(r.messageCount),
-    unreadCount: Number(r.unreadCount),
-    lastReadMessageId: Number(r.lastReadMessageId ?? 0),
-    lastMessage: r.lastMessageId
-      ? {
-          id: Number(r.lastMessageId),
-          senderId: Number(r.lastSenderId),
-          body: bodyById.get(Number(r.lastMessageId)) ?? '',
-          createdAt: new Date(r.lastCreatedAt!).toISOString(),
-        }
-      : null,
+    messageCount: r.messageCount,
+    unreadCount: r.unreadCount,
+    lastReadMessageId: r.lastReadMessageId,
+    lastMessage:
+      r.lastMessageId !== null
+        ? {
+            id: r.lastMessageId,
+            senderId: r.lastSenderId ?? 0,
+            body: bodyById.get(r.lastMessageId) ?? '',
+            createdAt: new Date(r.lastCreatedAt ?? r.activityAt).toISOString(),
+          }
+        : null,
     activityAt: new Date(r.activityAt).toISOString(),
-    participants: participantsByConversation.get(Number(r.id)) ?? [],
+    participants: participantsByConversation.get(r.id) ?? [],
   }));
 
   return {
@@ -189,7 +135,7 @@ export async function listConversations(
       hasMore && last
         ? encodeCursor({
             activityMs: new Date(last.activityAt).getTime(),
-            conversationId: Number(last.id),
+            conversationId: last.id,
           })
         : null,
   };
@@ -207,32 +153,16 @@ async function participantsFor(
   const result = new Map<number, Participant[]>();
   if (!conversationIds.length) return result;
 
-  const rows = await queryRows<ParticipantRow>(
-    `SELECT p.conversation_id AS conversationId, u.id, u.name
-     FROM conversation_participants p
-     JOIN users u ON u.id = p.user_id
-     WHERE p.conversation_id IN (${sqlList(conversationIds.length)})
-       AND p.user_id <> ?
-     ORDER BY u.name ASC`,
-    [...conversationIds, excludeUserId],
-  );
-
-  const online = await onlineAmong([...new Set(rows.map((r) => Number(r.id)))]);
+  const rows = await participantNameRows(conversationIds, excludeUserId);
+  const online = await onlineAmong([...new Set(rows.map((r) => r.id))]);
   for (const row of rows) {
-    const conversationId = Number(row.conversationId);
-    const list = result.get(conversationId) ?? [];
-    list.push({ id: Number(row.id), name: row.name, online: online.has(Number(row.id)) });
-    result.set(conversationId, list);
+    const list = result.get(row.conversationId) ?? [];
+    list.push({ id: row.id, name: row.name, online: online.has(row.id) });
+    result.set(row.conversationId, list);
   }
   return result;
 }
 
 export async function conversationTitles(ids: number[]): Promise<Map<number, string>> {
-  if (!ids.length) return new Map();
-  const unique = [...new Set(ids)];
-  const rows = await queryRows<{ id: number; title: string }>(
-    `SELECT id, title FROM conversations WHERE id IN (${sqlList(unique.length)})`,
-    unique,
-  );
-  return new Map(rows.map((r) => [Number(r.id), r.title]));
+  return titlesByIds(ids);
 }

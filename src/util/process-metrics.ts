@@ -52,7 +52,10 @@ export function memoryMbOf(residentBytes: number): number {
  * time between them. Sampling on an interval means /api/health can answer immediately with the last
  * computed value instead of blocking to measure.
  */
-export function startCpuSampling(intervalMs: number): { cpuPercent: () => number; stop: () => void } {
+export function startCpuSampling(intervalMs: number): {
+  cpuPercent: () => number;
+  stop: () => void;
+} {
   let previous = process.cpuUsage();
   let previousAt = Date.now();
   let percent = 0;
@@ -113,7 +116,11 @@ export function startRequestRateSampling(windowSeconds = 60): {
       buckets[cursor] = (buckets[cursor] ?? 0) + 1;
     },
     // `observedSeconds + 1` because the current bucket is partially elapsed and still counts.
-    perMinute: () => ratePerMinute(buckets.reduce((n, c) => n + c, 0), observedSeconds + 1),
+    perMinute: () =>
+      ratePerMinute(
+        buckets.reduce((n, c) => n + c, 0),
+        observedSeconds + 1,
+      ),
     stop: () => clearInterval(timer),
   };
 }

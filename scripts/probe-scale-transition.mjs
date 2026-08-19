@@ -51,13 +51,19 @@ async function jpost(path, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return { status: res.status, instance: res.headers.get('x-relay-instance'), body: await res.json().catch(() => null) };
+  return {
+    status: res.status,
+    instance: res.headers.get('x-relay-instance'),
+    body: await res.json().catch(() => null),
+  };
 }
 
 /** How many endpoints Envoy has in the api cluster right now. */
 async function envoyEndpoints() {
   const text = await (await fetch(`${ADMIN}/clusters`)).text();
-  return text.split('\n').filter((l) => l.startsWith('api::') && l.includes('::health_flags::healthy')).length;
+  return text
+    .split('\n')
+    .filter((l) => l.startsWith('api::') && l.includes('::health_flags::healthy')).length;
 }
 
 // --no-deps and an explicit service, or Compose re-runs the seed job and waits on every database
@@ -65,7 +71,8 @@ async function envoyEndpoints() {
 const scaleTo = (n) =>
   shQuiet('docker', ['compose', 'up', '-d', '--no-deps', '--scale', `api=${n}`, 'api']);
 const runningReplicas = () =>
-  sh('docker', ['compose', 'ps', 'api', '--format', '{{.Name}}']).split('\n').filter(Boolean).length;
+  sh('docker', ['compose', 'ps', 'api', '--format', '{{.Name}}']).split('\n').filter(Boolean)
+    .length;
 
 /** Waits until Envoy reports exactly `n` healthy endpoints, and reports how long that took. */
 async function waitForDiscovery(n, budgetMs = DISCOVERY_BUDGET_MS) {
@@ -95,7 +102,11 @@ function startTraffic(conversationId) {
         seen.get += 1;
         const instance = res.headers.get('x-relay-instance');
         if (instance) seen.instances.add(instance);
-        if (!res.ok) seen.failures.push(`GET ${res.status}`);
+        // 429 is the rate limiter working as designed, not a transition failure — same carve-out
+        // the POST branch below makes. This loop's ~83 reads per 10s runs close enough to the
+        // shared `reads` allowance (100/10s) that any tightening of it would otherwise fail the
+        // probe with spurious GET 429s.
+        if (!res.ok && res.status !== 429) seen.failures.push(`GET ${res.status}`);
       } catch (err) {
         seen.failures.push(`GET threw: ${err.message}`);
       }
@@ -188,7 +199,9 @@ function reconnectingClient(userId, conversationIds) {
 const started = runningReplicas();
 console.log(`  stack is running ${started} replica(s); this probe will end back at ${FROM}`);
 
-const conv = (await jpost('/api/conversations', { title: uid('scale-transition'), participantIds: [1, 2] })).body;
+const conv = (
+  await jpost('/api/conversations', { title: uid('scale-transition'), participantIds: [1, 2] })
+).body;
 const CLIENTS = 6;
 let clients = [];
 
@@ -198,9 +211,14 @@ try {
     await waitForDiscovery(FROM);
   }
 
-  clients = Array.from({ length: CLIENTS }, (_, i) => reconnectingClient(i === 0 ? 1 : 2, [conv.id]));
+  clients = Array.from({ length: CLIENTS }, (_, i) =>
+    reconnectingClient(i === 0 ? 1 : 2, [conv.id]),
+  );
   const allLive = await Promise.all(clients.map((c) => c.waitLive()));
-  check(allLive.every(Boolean), `${CLIENTS} clients are connected and subscribed at ${FROM} replicas`);
+  check(
+    allLive.every(Boolean),
+    `${CLIENTS} clients are connected and subscribed at ${FROM} replicas`,
+  );
 
   for (const [label, target] of [
     ['scaling up', TO],
@@ -213,10 +231,14 @@ try {
       // scale-up — and the scale-down removes the *newest* replicas. Without a batch opened while the
       // stack was wide, nothing would be on a departing replica and the eviction checks below would
       // pass without testing anything.
-      const late = Array.from({ length: CLIENTS }, (_, i) => reconnectingClient(i === 0 ? 1 : 2, [conv.id]));
+      const late = Array.from({ length: CLIENTS }, (_, i) =>
+        reconnectingClient(i === 0 ? 1 : 2, [conv.id]),
+      );
       await Promise.all(late.map((c) => c.waitLive()));
       clients = [...clients, ...late];
-      console.log(`  opened ${CLIENTS} more clients while wide, so some sit on replicas about to go`);
+      console.log(
+        `  opened ${CLIENTS} more clients while wide, so some sit on replicas about to go`,
+      );
     }
 
     const traffic = startTraffic(conv.id);
@@ -260,17 +282,24 @@ try {
 
     const marker = uid('after-transition');
     await jpost('/api/messages', {
-      conversationId: conv.id, senderId: 1, body: marker, clientId: marker,
+      conversationId: conv.id,
+      senderId: 1,
+      body: marker,
+      clientId: marker,
     });
     await sleep(1_500);
-    const copies = clients.map((c) => c.state.events.filter((e) => e.type === 'message' && e.body === marker).length);
+    const copies = clients.map(
+      (c) => c.state.events.filter((e) => e.type === 'message' && e.body === marker).length,
+    );
     check(
       copies.every((n) => n === 1),
       'and receives a message published afterwards, exactly once',
       `per-client copies: ${JSON.stringify(copies)}`,
     );
 
-    const abrupt = clients.flatMap((c) => c.state.closes).filter((code) => code !== 1001 && code !== 1000);
+    const abrupt = clients
+      .flatMap((c) => c.state.closes)
+      .filter((code) => code !== 1001 && code !== 1000);
     console.log(
       `  socket churn: ${clients.reduce((n, c) => n + c.state.connects, 0)} connects, ` +
         `closes=${JSON.stringify(clients.flatMap((c) => c.state.closes))}`,
@@ -303,7 +332,9 @@ try {
           graceful.length > abrupt.length,
           'departing replicas close their sockets gracefully rather than cutting them',
           `${graceful.length} graceful, ${abrupt.length} abrupt of ${closes.length} evicted` +
-            (abrupt.length ? ` (${JSON.stringify(abrupt)} — peers that answered after the grace window)` : ''),
+            (abrupt.length
+              ? ` (${JSON.stringify(abrupt)} — peers that answered after the grace window)`
+              : ''),
         );
       }
     }
@@ -318,6 +349,8 @@ try {
 }
 
 const failed = results.filter((r) => !r.pass);
-console.log(`\n═══ ${results.length - failed.length}/${results.length} transition checks passed ═══`);
+console.log(
+  `\n═══ ${results.length - failed.length}/${results.length} transition checks passed ═══`,
+);
 for (const f of failed) console.log(`  FAILED: ${f.what}`);
 process.exit(failed.length ? 1 : 0);

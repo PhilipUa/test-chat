@@ -112,11 +112,10 @@ export function onlineAmong(userIds: number[]): Promise<Set<number>> {
 
     const online = new Set<number>();
     results?.forEach(([err, count], i) => {
-      if (!err && Number(count) > 0) online.add(unique[i]!);
+      if (!err && Number(count) > 0) online.add(unique[i]);
     });
     return online;
   });
 }
 
 const member = (connectionId: string) => `${config.instanceId}:${connectionId}`;
-

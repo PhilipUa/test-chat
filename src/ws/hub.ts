@@ -52,8 +52,15 @@ export function attachWs(server: Server): void {
     });
 
     ws.on('message', (raw) => {
+      // RawData is Buffer | ArrayBuffer | Buffer[]; normalise explicitly rather than relying on
+      // toString(), which stringifies an ArrayBuffer as '[object ArrayBuffer]'.
+      const text = Buffer.isBuffer(raw)
+        ? raw.toString('utf8')
+        : Array.isArray(raw)
+          ? Buffer.concat(raw).toString('utf8')
+          : Buffer.from(raw).toString('utf8');
       // Never let a malformed or hostile frame reject into the void.
-      void handleFrame(client, raw.toString()).catch((err) => {
+      void handleFrame(client, text).catch((err) => {
         console.error('[ws] frame handling failed:', err);
         registry.send(client, { type: 'error', error: 'could not handle that frame' });
       });

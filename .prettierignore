@@ -1,0 +1,11 @@
+# Prose keeps its hand-set line breaks; only code is formatted.
+*.md
+docs/
+spec/
+tasks/
+
+package-lock.json
+postman/
+.idea/
+.playwright-mcp/
+src/generated/

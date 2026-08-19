@@ -1,13 +1,7 @@
-import { config } from '../config.ts';
-import { messageBodiesById } from '../db/mongo.ts';
-import { isDuplicateKeyError, queryRows } from '../db/mysql.ts';
-import {
-  SELECT_COLUMNS,
-  findBody,
-  findRowByClientId,
-  insertMessage,
-  type MessageRow,
-} from './message-store.ts';
+import { isDuplicateKeyError } from '../db/mysql.ts';
+import { bodiesByIds } from '../repositories/message-bodies.repository.ts';
+import { pageRows } from '../repositories/messages.repository.ts';
+import { findBody, findRowByClientId, insertMessage, type MessageRow } from './message-store.ts';
 
 export { verifySignature } from './message-signing.ts';
 
@@ -38,12 +32,12 @@ export interface CreateResult {
  */
 function toMessage(row: MessageRow, body: string): Message {
   return {
-    id: Number(row.id),
-    conversationId: Number(row.conversationId),
-    senderId: Number(row.senderId),
+    id: row.id,
+    conversationId: row.conversationId,
+    senderId: row.senderId,
     body,
     clientId: row.clientId,
-    createdAt: new Date(row.createdAt).toISOString(),
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
@@ -111,12 +105,12 @@ async function findExisting(
   const row = await findRowByClientId(conversationId, clientId);
   if (!row) return null;
 
-  const body = await settledBody(Number(row.id));
+  const body = await settledBody(row.id);
   if (body) return toMessage(row, body);
 
   // Same sender and same idempotency key: this is a retry of the send we are holding, so its body is
   // the honest answer. Without a match we have nothing better than the empty string.
-  if (pending && Number(row.senderId) === pending.senderId) return toMessage(row, pending.body);
+  if (pending && row.senderId === pending.senderId) return toMessage(row, pending.body);
   return toMessage(row, '');
 }
 
@@ -158,45 +152,33 @@ export interface MessagePage {
  */
 export async function listMessages(
   conversationId: number,
-  opts: { limit?: number; before?: number; since?: number } = {},
+  // `limit` arrives already defaulted and clamped by the route schema — the one place page-size
+  // policy lives.
+  opts: { limit: number; before?: number; since?: number },
 ): Promise<MessagePage> {
-  const limit = Math.min(opts.limit ?? config.messages.defaultPageSize, config.messages.maxPageSize);
-
-  const params: unknown[] = [conversationId];
+  const { limit } = opts;
   const forwards = opts.since !== undefined;
-  let cursor = '';
-  if (forwards) {
-    cursor = 'AND id > ?';
-    params.push(opts.since);
-  } else if (opts.before !== undefined) {
-    cursor = 'AND id < ?';
-    params.push(opts.before);
-  }
-
-  // limit + 1 tells us whether there is another page without a second COUNT query.
-  const rows = await queryRows<MessageRow>(
-    `SELECT ${SELECT_COLUMNS}
-     FROM messages
-     WHERE conversation_id = ? ${cursor}
-     ORDER BY id ${forwards ? 'ASC' : 'DESC'}
-     LIMIT ${limit + 1}`,
-    params,
-  );
+  // limit + 1 rows tell us whether there is another page without a second COUNT query.
+  const rows = await pageRows(conversationId, {
+    forwards,
+    cursorId: forwards ? opts.since : opts.before,
+    limit,
+  });
 
   const hasMore = rows.length > limit;
   const trimmed = hasMore ? rows.slice(0, limit) : rows;
   // Always hand back oldest -> newest for rendering. Forwards queries already are.
   const page = forwards ? trimmed : trimmed.reverse();
 
-  const bodyById = await messageBodiesById(page.map((r) => Number(r.id)));
+  const bodyById = await bodiesByIds(page.map((r) => r.id));
 
   return {
-    messages: page.map((r) => toMessage(r, bodyById.get(Number(r.id)) ?? '')),
+    messages: page.map((r) => toMessage(r, bodyById.get(r.id) ?? '')),
     // Null unless there is genuinely an older page: it used to be the oldest id on the page even at
     // the start of history, contradicting its own contract. Meaningless walking forwards, where
     // `latestId` is the cursor.
-    nextBefore: !forwards && hasMore && page.length ? Number(page[0]!.id) : null,
+    nextBefore: !forwards && hasMore && page.length ? page[0].id : null,
     hasMore,
-    latestId: page.length ? Number(page[page.length - 1]!.id) : null,
+    latestId: page.length ? page[page.length - 1].id : null,
   };
 }

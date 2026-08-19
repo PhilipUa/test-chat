@@ -1,6 +1,6 @@
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { BASE, freshConversation, get, post, unique, waitForApi } from './helpers.mjs';
+import { freshConversation, get, post, unique, waitForApi } from './helpers.mjs';
 
 /**
  * Load-balancing properties: every replica must answer the same way.
@@ -59,7 +59,10 @@ describe('state is shared, not per-process', () => {
     // between replicas; the watermark is in MySQL so every replica must give the same answer.
     const conv = await freshConversation([1, 2], unique('scale-unread'));
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 2, body: 'unread me', clientId: unique('u'),
+      conversationId: conv.id,
+      senderId: 2,
+      body: 'unread me',
+      clientId: unique('u'),
     });
 
     const seen = await acrossReplicas(`/api/conversations?userId=1&limit=200`);
@@ -81,14 +84,15 @@ describe('state is shared, not per-process', () => {
     const conv = await freshConversation([1, 2], unique('scale-ryw'));
     const marker = unique('ryw-body');
     const written = await post('/api/messages', {
-      conversationId: conv.id, senderId: 2, body: marker, clientId: unique('r'),
+      conversationId: conv.id,
+      senderId: 2,
+      body: marker,
+      clientId: unique('r'),
     });
     assert.equal(written.status, 201);
 
     const seen = await acrossReplicas(`/api/messages?conversationId=${conv.id}&userId=1`);
-    const found = [...seen.values()].map((res) =>
-      res.body.messages.some((m) => m.body === marker),
-    );
+    const found = [...seen.values()].map((res) => res.body.messages.some((m) => m.body === marker));
 
     assert.deepEqual(
       [...new Set(found)],
@@ -106,7 +110,10 @@ describe('state is shared, not per-process', () => {
     const servers = new Set();
     for (let i = 0; i < 8; i++) {
       const res = await post('/api/messages', {
-        conversationId: conv.id, senderId: 1, body: `burst-${i}`, clientId: unique('rl'),
+        conversationId: conv.id,
+        senderId: 1,
+        body: `burst-${i}`,
+        clientId: unique('rl'),
       });
       statuses.push(res.status);
       if (servedBy(res)) servers.add(servedBy(res));

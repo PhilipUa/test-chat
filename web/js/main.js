@@ -3,7 +3,14 @@ import { el, noteLatestMessage, setUserId, state } from './state.js';
 import { mergeConversations } from './util.js';
 import { connectWs, setReloadConversations, subscribe } from './socket.js';
 import { cancelPendingStop, sendTyping, watchComposer } from './features/typing.js';
-import { appendMessage, buildMessage, openConversationOrNotice, resetPane, scrollToBottom, watchLoadOlder } from './views/messages.js';
+import {
+  appendMessage,
+  buildMessage,
+  openConversationOrNotice,
+  resetPane,
+  scrollToBottom,
+  watchLoadOlder,
+} from './views/messages.js';
 import { notice } from './views/notice.js';
 import { renderSidebar, setOnLoadMore, setOnSelect } from './views/sidebar.js';
 import { watchSearchForm } from './views/search.js';

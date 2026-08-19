@@ -11,14 +11,14 @@ static_resources:
         - filters:
             - name: envoy.filters.network.http_connection_manager
               typed_config:
-                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                 stat_prefix: ingress
                 upgrade_configs:
                   - upgrade_type: websocket
                 access_log:
                   - name: envoy.access_loggers.stdout
                     typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      '@type': type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
                       log_format:
                         text_format_source:
                           # upstream_host tells you which api replica served a request, which is
@@ -28,24 +28,24 @@ static_resources:
                   name: local
                   virtual_hosts:
                     - name: app
-                      domains: ["*"]
+                      domains: ['*']
                       routes:
                         # Reads first, so they can be retried more aggressively than writes.
                         # `unavailable` and `reset` can both happen *after* the upstream has already
                         # processed a request, so they are only safe on a method that changes
                         # nothing. This also covers the WebSocket upgrade, which is a GET.
                         - match:
-                            prefix: "/"
+                            prefix: '/'
                             headers:
-                              - name: ":method"
-                                string_match: { exact: "GET" }
+                              - name: ':method'
+                                string_match: { exact: 'GET' }
                           route:
                             cluster: api
                             timeout: 0s
                             retry_policy:
-                              retry_on: "connect-failure,refused-stream,unavailable,reset"
+                              retry_on: 'connect-failure,refused-stream,unavailable,reset'
                               num_retries: 2
-                        - match: { prefix: "/" }
+                        - match: { prefix: '/' }
                           route:
                             cluster: api
                             timeout: 0s
@@ -55,12 +55,12 @@ static_resources:
                             # POST /api/conversations and /:id/read are not deduplicated at all, so a
                             # reset mid-create could produce two conversations.
                             retry_policy:
-                              retry_on: "connect-failure,refused-stream"
+                              retry_on: 'connect-failure,refused-stream'
                               num_retries: 2
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                      '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
   clusters:
     - name: api

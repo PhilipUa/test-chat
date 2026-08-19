@@ -1,6 +1,11 @@
 import { config } from '../config.ts';
 import { redis } from '../db/redis.ts';
-import { channelFor, shouldDeliver, type ConversationEvent, type FanoutEnvelope } from './events.ts';
+import {
+  channelFor,
+  shouldDeliver,
+  type ConversationEvent,
+  type FanoutEnvelope,
+} from './events.ts';
 import * as registry from './registry.ts';
 import { bestEffort } from '../util/resilience.ts';
 

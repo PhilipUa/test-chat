@@ -62,7 +62,9 @@ const WATERMARKS = {
   rpm: { up: 400, down: 100, aggregate: 'mean' },
 };
 if (!WATERMARKS[SIGNAL]) {
-  console.error(`--signal must be one of ${Object.keys(WATERMARKS).join(', ')} (memory does not respond to synthetic load — see below)`);
+  console.error(
+    `--signal must be one of ${Object.keys(WATERMARKS).join(', ')} (memory does not respond to synthetic load — see below)`,
+  );
   process.exit(2);
 }
 
@@ -74,7 +76,8 @@ const sh = (cmd, args) =>
 const section = (t) => console.log(`\n${'─'.repeat(78)}\n${t}\n${'─'.repeat(78)}`);
 
 const runningReplicas = () =>
-  sh('docker', ['compose', 'ps', 'api', '--format', '{{.Name}}']).split('\n').filter(Boolean).length;
+  sh('docker', ['compose', 'ps', 'api', '--format', '{{.Name}}']).split('\n').filter(Boolean)
+    .length;
 
 const healthyReplicas = () =>
   sh('docker', ['compose', 'ps', 'api', '--format', '{{.Status}}'])
@@ -83,7 +86,9 @@ const healthyReplicas = () =>
 
 async function envoyEndpoints() {
   const text = await (await fetch(`${ADMIN}/clusters`)).text();
-  return text.split('\n').filter((l) => l.startsWith('api::') && l.includes('::health_flags::healthy')).length;
+  return text
+    .split('\n')
+    .filter((l) => l.startsWith('api::') && l.includes('::health_flags::healthy')).length;
 }
 
 /** Waits until the stack has settled at `n`: containers healthy and the proxy agreeing. */
@@ -126,11 +131,27 @@ async function openSocketLoad(count) {
     const ws = new WebSocket(BASE.replace(/^http/, 'ws') + '/');
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('ws open timeout')), 10_000);
-      ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-      ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('ws error')); }, { once: true });
+      ws.addEventListener(
+        'open',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+      ws.addEventListener(
+        'error',
+        () => {
+          clearTimeout(timer);
+          reject(new Error('ws error'));
+        },
+        { once: true },
+      );
     });
     ws.addEventListener('error', () => {});
-    ws.send(JSON.stringify({ type: 'subscribe', userId: i % 2 ? 2 : 1, conversationIds: [conv.id] }));
+    ws.send(
+      JSON.stringify({ type: 'subscribe', userId: i % 2 ? 2 : 1, conversationIds: [conv.id] }),
+    );
     sockets.push(ws);
   }
   return {
@@ -144,20 +165,41 @@ async function openSocketLoad(count) {
 /**
  * Sustained HTTP load, for the cpu and rpm signals.
  *
- * `cpu` hits the most expensive read there is — the inbox with a large page, two correlated subqueries per
- * conversation. `rpm` hits the cheapest one, because the point there is request *count*, and using an
+ * `cpu` hits the most expensive reads there are — the inbox with a large page (two correlated
+ * subqueries per conversation) and search (a fan-out over every conversation the user can see).
+ * `rpm` hits the cheapest, unmetered one, because the point there is request *count*, and using an
  * expensive endpoint would move both signals and muddy which rule fired.
+ *
+ * The expensive reads are metered (the shared `reads` bucket is 100/10s *per user*, search 20/10s),
+ * so the cpu load spreads across users 1-3 — the ones that own conversations — and backs off
+ * briefly on a 429 instead of hammering: a single-user hammer spends its allowance in the first
+ * second and then measures how cheaply the limiter says no, which moves rpm and never cpu. Only
+ * 2xx responses count as served, so a throttled run reads as throttled rather than as load.
  */
 function openHttpLoad(kind, workers = 40) {
-  const path = kind === 'cpu' ? '/api/conversations?userId=1&limit=200' : '/api/users';
   let running = true;
   let served = 0;
+  let throttled = 0;
 
-  const loops = Array.from({ length: workers }, async () => {
+  // Every fifth cpu request is a search: its own per-user bucket, and the priciest op in the app.
+  const cpuPath = (user, i) =>
+    i % 5 === 0
+      ? `/api/search?q=the&userId=${user}`
+      : `/api/conversations?userId=${user}&limit=200`;
+
+  const loops = Array.from({ length: workers }, async (_, worker) => {
+    let i = 0;
     while (running) {
+      const path = kind === 'cpu' ? cpuPath((worker % 3) + 1, i++) : '/api/users';
       try {
-        await (await fetch(BASE + path)).json();
-        served += 1;
+        const res = await fetch(BASE + path);
+        await res.json();
+        if (res.ok) {
+          served += 1;
+        } else if (res.status === 429) {
+          throttled += 1;
+          await sleep(300);
+        }
       } catch {
         /* a replica mid-restart is expected */
       }
@@ -169,6 +211,11 @@ function openHttpLoad(kind, workers = 40) {
     close: async () => {
       running = false;
       await Promise.all(loops);
+      if (throttled) {
+        console.log(
+          `  (load: ${served} served, ${throttled} rate-limited and retried after backoff)`,
+        );
+      }
       await sleep(1_000);
     },
   };
@@ -189,9 +236,11 @@ async function showSignal(label) {
       const body = await res.json();
       if (!instance) continue;
       const value =
-        SIGNAL === 'connections' ? `${body.connections} conn`
-        : SIGNAL === 'cpu' ? `${body.cpuPercent}% cpu`
-        : `${Math.round(body.requestsPerMinute)} rpm`;
+        SIGNAL === 'connections'
+          ? `${body.connections} conn`
+          : SIGNAL === 'cpu'
+            ? `${body.cpuPercent}% cpu`
+            : `${Math.round(body.requestsPerMinute)} rpm`;
       seen.set(instance, value);
     } catch {
       /* ignore */
@@ -217,8 +266,20 @@ async function autoscaleUntilChanged(from, direction) {
     const tick = spawnSync(
       'node',
       [
-        'scripts/autoscale.mjs', '--once', '--min', '2', '--max', '6',
-        '--signal', SIGNAL, '--up', String(w.up), '--down', String(w.down), '--aggregate', w.aggregate,
+        'scripts/autoscale.mjs',
+        '--once',
+        '--min',
+        '2',
+        '--max',
+        '6',
+        '--signal',
+        SIGNAL,
+        '--up',
+        String(w.up),
+        '--down',
+        String(w.down),
+        '--aggregate',
+        w.aggregate,
       ],
       { encoding: 'utf8' },
     );
@@ -287,7 +348,9 @@ async function newReplicaJoinsFanout() {
     }
   }
   // The newest replica is the one that started last — that is the one the autoscaler added.
-  const newest = [...before.entries()].sort((a, b) => (a[1].startedAt < b[1].startedAt ? 1 : -1))[0];
+  const newest = [...before.entries()].sort((a, b) =>
+    a[1].startedAt < b[1].startedAt ? 1 : -1,
+  )[0];
   if (!newest) return { ok: false, detail: 'no replica answered' };
 
   const conv = await (
@@ -312,7 +375,9 @@ async function newReplicaJoinsFanout() {
       }
     });
     ws.addEventListener('error', () => {});
-    ws.send(JSON.stringify({ type: 'subscribe', userId: i % 2 ? 2 : 1, conversationIds: [conv.id] }));
+    ws.send(
+      JSON.stringify({ type: 'subscribe', userId: i % 2 ? 2 : 1, conversationIds: [conv.id] }),
+    );
     sockets.push({ ws, events });
   }
   await sleep(1_500);
@@ -337,7 +402,9 @@ async function newReplicaJoinsFanout() {
   const publishedBy = sent.headers.get('x-relay-instance');
   await sleep(1_500);
 
-  const copies = sockets.map((s) => s.events.filter((e) => e.type === 'message' && e.body === marker).length);
+  const copies = sockets.map(
+    (s) => s.events.filter((e) => e.type === 'message' && e.body === marker).length,
+  );
   for (const s of sockets) s.ws.close();
   await sleep(300);
 
@@ -360,14 +427,20 @@ const phases = [];
 
 try {
   if (!(await settleAt(started))) {
-    throw new Error(`the stack is not settled at ${started} replicas; start it before running this`);
+    throw new Error(
+      `the stack is not settled at ${started} replicas; start it before running this`,
+    );
   }
 
   section(`PHASE 1 — baseline: ${started} replica(s), as found`);
   const baselineServing = await servingReplicas();
   phases.push({
     phase: 'baseline',
-    ok: runCollection({ phase: 'baseline', previousReplicas: baselineServing, expectedReplicas: baselineServing }),
+    ok: runCollection({
+      phase: 'baseline',
+      previousReplicas: baselineServing,
+      expectedReplicas: baselineServing,
+    }),
     replicas: baselineServing,
   });
 
@@ -395,8 +468,11 @@ try {
   phases.push({
     phase: 'scaled-up',
     ok:
-      runCollection({ phase: 'scaled-up', previousReplicas: started, expectedReplicas: upServing }) &&
-      wired.ok,
+      runCollection({
+        phase: 'scaled-up',
+        previousReplicas: started,
+        expectedReplicas: upServing,
+      }) && wired.ok,
     replicas: upServing,
   });
 
@@ -414,7 +490,11 @@ try {
   const downServing = await servingReplicas();
   phases.push({
     phase: 'scaled-down',
-    ok: runCollection({ phase: 'scaled-down', previousReplicas: up.replicas, expectedReplicas: downServing }),
+    ok: runCollection({
+      phase: 'scaled-down',
+      previousReplicas: up.replicas,
+      expectedReplicas: downServing,
+    }),
     replicas: downServing,
   });
 } finally {

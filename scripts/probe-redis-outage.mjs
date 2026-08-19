@@ -35,7 +35,11 @@ const section = (t) => console.log(`\n═══ ${t} ═══`);
 
 const jget = async (p) => {
   const res = await fetch(BASE + p);
-  return { status: res.status, instance: res.headers.get('x-relay-instance'), body: await res.json().catch(() => null) };
+  return {
+    status: res.status,
+    instance: res.headers.get('x-relay-instance'),
+    body: await res.json().catch(() => null),
+  };
 };
 const jpost = async (p, b) => {
   const res = await fetch(BASE + p, {
@@ -43,7 +47,11 @@ const jpost = async (p, b) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(b),
   });
-  return { status: res.status, instance: res.headers.get('x-relay-instance'), body: await res.json().catch(() => null) };
+  return {
+    status: res.status,
+    instance: res.headers.get('x-relay-instance'),
+    body: await res.json().catch(() => null),
+  };
 };
 
 /** Every replica's view of its own dependencies. */
@@ -67,8 +75,22 @@ async function client(userId, conversationIds) {
   const events = [];
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('ws open timeout')), 10_000);
-    ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-    ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('ws error')); }, { once: true });
+    ws.addEventListener(
+      'open',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+    ws.addEventListener(
+      'error',
+      () => {
+        clearTimeout(timer);
+        reject(new Error('ws error'));
+      },
+      { once: true },
+    );
   });
   ws.addEventListener('error', () => {});
   ws.addEventListener('message', (e) => {
@@ -103,7 +125,9 @@ const startRedis = () => {
   redisStopped = false;
 };
 
-const conv = (await jpost('/api/conversations', { title: uid('redis-outage'), participantIds: [1, 2] })).body;
+const conv = (
+  await jpost('/api/conversations', { title: uid('redis-outage'), participantIds: [1, 2] })
+).body;
 const before = [];
 const during = [];
 
@@ -112,10 +136,18 @@ try {
 
   section('with redis up');
   for (let i = 0; i < 4; i++) before.push(await client(i % 2 ? 2 : 1, [conv.id]));
-  check(before.every((c) => c.ack), 'clients subscribe normally');
+  check(
+    before.every((c) => c.ack),
+    'clients subscribe normally',
+  );
 
   const baseline = uid('baseline');
-  await jpost('/api/messages', { conversationId: conv.id, senderId: 1, body: baseline, clientId: baseline });
+  await jpost('/api/messages', {
+    conversationId: conv.id,
+    senderId: 1,
+    body: baseline,
+    clientId: baseline,
+  });
   await sleep(1_200);
   check(
     before.every((c) => got(c, baseline) === 1),
@@ -131,20 +163,33 @@ try {
   await sleep(3_000);
 
   const health = await replicaHealth();
-  check(health.size > 0, 'every replica still answers /api/health', `${health.size} replica(s) answered`);
+  check(
+    health.size > 0,
+    'every replica still answers /api/health',
+    `${health.size} replica(s) answered`,
+  );
   check(
     [...health.values()].every((h) => h.redis === false),
     'and reports redis as down rather than claiming to be fine',
-    [...health.values()].map((h) => `${h.instanceId} redis=${h.redis} realtime=${h.realtimeConnected}`).join('  '),
+    [...health.values()]
+      .map((h) => `${h.instanceId} redis=${h.redis} realtime=${h.realtimeConnected}`)
+      .join('  '),
   );
 
   // The rate limiter is designed to fail *open*: a chat app that stops accepting messages because its
   // limiter is unreachable has turned a protection into an outage.
   const duringOutage = uid('sent-during-outage');
   const sent = await jpost('/api/messages', {
-    conversationId: conv.id, senderId: 1, body: duringOutage, clientId: duringOutage,
+    conversationId: conv.id,
+    senderId: 1,
+    body: duringOutage,
+    clientId: duringOutage,
   });
-  check(sent.status === 201, 'a send still succeeds — the rate limiter fails open', `POST -> ${sent.status}`);
+  check(
+    sent.status === 201,
+    'a send still succeeds — the rate limiter fails open',
+    `POST -> ${sent.status}`,
+  );
   check(
     sent.body?.body === duringOutage,
     'and the message comes back intact, not empty',
@@ -201,13 +246,16 @@ try {
   let recovered = new Map();
   while (Date.now() < deadline) {
     recovered = await replicaHealth();
-    if (recovered.size > 0 && [...recovered.values()].every((h) => h.redis && h.realtimeConnected)) break;
+    if (recovered.size > 0 && [...recovered.values()].every((h) => h.redis && h.realtimeConnected))
+      break;
     await sleep(1_000);
   }
   check(
     [...recovered.values()].every((h) => h.redis && h.realtimeConnected),
     'every replica reports redis and realtime healthy again',
-    [...recovered.values()].map((h) => `${h.instanceId} redis=${h.redis} realtime=${h.realtimeConnected}`).join('  '),
+    [...recovered.values()]
+      .map((h) => `${h.instanceId} redis=${h.redis} realtime=${h.realtimeConnected}`)
+      .join('  '),
   );
 
   // The resync nudge: the socket never closed, so nothing else would tell these clients they missed events.
@@ -224,7 +272,10 @@ try {
   await sleep(3_000);
   const afterRecovery = uid('after-recovery');
   await jpost('/api/messages', {
-    conversationId: conv.id, senderId: 1, body: afterRecovery, clientId: afterRecovery,
+    conversationId: conv.id,
+    senderId: 1,
+    body: afterRecovery,
+    clientId: afterRecovery,
   });
   await sleep(2_500);
 
@@ -246,7 +297,10 @@ try {
   const burst = [];
   for (let i = 0; i < 8; i++) {
     const res = await jpost('/api/messages', {
-      conversationId: conv.id, senderId: 2, body: `burst-${i}`, clientId: uid('rl'),
+      conversationId: conv.id,
+      senderId: 2,
+      body: `burst-${i}`,
+      clientId: uid('rl'),
     });
     burst.push(res.status);
   }
@@ -262,6 +316,8 @@ try {
 }
 
 const failed = results.filter((r) => !r.pass);
-console.log(`\n═══ ${results.length - failed.length}/${results.length} redis-outage checks passed ═══`);
+console.log(
+  `\n═══ ${results.length - failed.length}/${results.length} redis-outage checks passed ═══`,
+);
 for (const f of failed) console.log(`  FAILED: ${f.what}`);
 process.exit(failed.length ? 1 : 0);

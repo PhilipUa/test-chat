@@ -1,0 +1,50 @@
+# Two jobs, split by what they need:
+#
+#   static       typecheck + lint + formatting + the pure unit tests — fast, no services.
+#   integration  the full suite against the real compose stack (Envoy, 1 api, MySQL, Mongo, Redis),
+#                because most of tests/ asserts against live HTTP and WebSockets.
+#
+# The probe scripts (probe:*, test:postman) are NOT run here: they scale the stack up and down and
+# take tens of minutes; they stay part of `npm run verify` for a workstation with Docker.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run prisma:generate
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: node --import tsx --test tests/rate-limit-config.test.mjs tests/process-metrics.test.mjs tests/web-util.test.mjs
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: cp .env.example .env
+      - run: docker compose up -d --wait
+        timeout-minutes: 10
+      - run: npm test
+        timeout-minutes: 20
+      - name: stack logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+      - if: always()
+        run: docker compose down -v

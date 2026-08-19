@@ -2,8 +2,9 @@ import http from 'node:http';
 import { createApp } from './app.ts';
 import { config } from './config.ts';
 import { runMigrations } from './db/migrate.ts';
-import { backfillBodyTokens, closeMongo, connectMongo, ensureMongoIndexes } from './db/mongo.ts';
+import { closeMongo, connectMongo, ensureMongoIndexes } from './db/mongo.ts';
 import { closeMysql, waitForMysql } from './db/mysql.ts';
+import { backfillSearchIndexes } from './repositories/message-bodies.repository.ts';
 import { closeRedis, waitForRedis } from './db/redis.ts';
 import { installProcessErrorHandlers } from './middleware/error-handler.ts';
 import { attachWs, closeWs } from './ws/hub.ts';
@@ -28,9 +29,14 @@ export async function start(): Promise<http.Server> {
   await waitForRedis();
   await runMigrations();
   await ensureMongoIndexes();
-  // Populates bodyTokens on messages written before the field existed, so indexed prefix search
-  // covers existing history. Batched and capped per boot so it can't hold up start-up.
-  await backfillBodyTokens(config.search.maxTokenLength, config.search.maxTokensPerMessage);
+  // Populates bodyTokens/bodyTrigrams on messages written before those fields existed, so prefix
+  // and fuzzy search cover existing history. Batched and capped per boot so it can't hold up
+  // start-up.
+  await backfillSearchIndexes({
+    maxTokenLength: config.search.maxTokenLength,
+    maxTokens: config.search.maxTokensPerMessage,
+    maxTrigrams: config.search.maxTrigramsPerMessage,
+  });
 
   await new Promise<void>((resolve) => {
     server.listen(config.port, () => {

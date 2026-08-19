@@ -93,9 +93,11 @@ function restore() {
   stopped.clear();
 }
 
-const conv = (await jpost('/api/conversations', { title: uid('failover'), participantIds: [1, 2] })).body;
-const presenceConv = (await jpost('/api/conversations', { title: uid('drain'), participantIds: [1, 5] }))
+const conv = (await jpost('/api/conversations', { title: uid('failover'), participantIds: [1, 2] }))
   .body;
+const presenceConv = (
+  await jpost('/api/conversations', { title: uid('drain'), participantIds: [1, 5] })
+).body;
 
 let browser;
 try {
@@ -104,7 +106,10 @@ try {
   section('a replica is killed outright (SIGKILL)');
 
   await jpost('/api/messages', {
-    conversationId: conv.id, senderId: 2, body: 'before the kill', clientId: uid('b'),
+    conversationId: conv.id,
+    senderId: 2,
+    body: 'before the kill',
+    clientId: uid('b'),
   });
 
   browser = await chromium.launch();
@@ -143,9 +148,16 @@ try {
   await sleep(1_500);
   const duringOutage = uid('sent-while-down');
   const posted = await jpost('/api/messages', {
-    conversationId: conv.id, senderId: 2, body: duringOutage, clientId: duringOutage,
+    conversationId: conv.id,
+    senderId: 2,
+    body: duringOutage,
+    clientId: duringOutage,
   });
-  check(posted.status === 201, 'a send still succeeds with a replica gone', `POST -> ${posted.status}`);
+  check(
+    posted.status === 201,
+    'a send still succeeds with a replica gone',
+    `POST -> ${posted.status}`,
+  );
 
   await page.waitForFunction(
     () => document.getElementById('connection')?.textContent === 'live',
@@ -163,7 +175,10 @@ try {
 
   const afterRecovery = uid('after-recovery');
   await jpost('/api/messages', {
-    conversationId: conv.id, senderId: 2, body: afterRecovery, clientId: afterRecovery,
+    conversationId: conv.id,
+    senderId: 2,
+    body: afterRecovery,
+    clientId: afterRecovery,
   });
   await page.waitForFunction(
     (body) => [...document.querySelectorAll('.msg .body')].some((n) => n.textContent === body),
@@ -172,7 +187,11 @@ try {
   );
   check(true, 'live updates resume on the new replica');
   check(pageErrors.length === 0, 'no uncaught errors in the page', pageErrors.join('; ') || 'none');
-  check(serverErrors.length === 0, 'nothing 5xx reached the page', serverErrors.join('; ') || 'none');
+  check(
+    serverErrors.length === 0,
+    'nothing 5xx reached the page',
+    serverErrors.join('; ') || 'none',
+  );
 
   await ctx.close();
 
@@ -199,7 +218,14 @@ try {
   const ws = new WebSocket(BASE.replace(/^http/, 'ws') + '/');
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('ws open timeout')), 10_000);
-    ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+    ws.addEventListener(
+      'open',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
   });
   ws.send(JSON.stringify({ type: 'subscribe', userId: 5, conversationIds: [presenceConv.id] }));
   await new Promise((r) => ws.addEventListener('message', r, { once: true }));
@@ -231,9 +257,9 @@ try {
     'a drained replica releases its users’ presence promptly',
     releasedAfterMs === undefined
       ? `still online 30s after SIGTERM — the ${PRESENCE_TTL_MS / 1000}s TTL is doing the work instead, ` +
-        `which means the shutdown handler never ran`
+          `which means the shutdown handler never ran`
       : `released after ${(releasedAfterMs / 1000).toFixed(1)}s (TTL fallback would be ` +
-        `up to ${PRESENCE_TTL_MS / 1000}s)`,
+          `up to ${PRESENCE_TTL_MS / 1000}s)`,
   );
 
   // Releasing presence isn't the whole job: the shutdown has to actually *finish*. Hitting the
@@ -250,8 +276,10 @@ try {
   check(
     drainLog.includes('[shutdown] complete'),
     'and says so',
-    drainLog.split('\n').filter((l) => l.includes('shutdown') || l.includes('shutting down')).join(' | ') ||
-      'no shutdown lines logged at all',
+    drainLog
+      .split('\n')
+      .filter((l) => l.includes('shutdown') || l.includes('shutting down'))
+      .join(' | ') || 'no shutdown lines logged at all',
   );
 } finally {
   restore();

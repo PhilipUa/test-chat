@@ -52,21 +52,25 @@ describe('UI: catch-up after a reconnect', () => {
     const bMarker = `beta-${Date.now()}`;
     const gapped = `gapped-${Date.now()}`;
     await post('/api/messages', {
-      conversationId: a.id, senderId: 2, body: 'seed-a', clientId: unique('a'),
+      conversationId: a.id,
+      senderId: 2,
+      body: 'seed-a',
+      clientId: unique('a'),
     });
     await post('/api/messages', {
-      conversationId: b.id, senderId: 2, body: bMarker, clientId: unique('b'),
+      conversationId: b.id,
+      senderId: 2,
+      body: bMarker,
+      clientId: unique('b'),
     });
 
     const { ctx, page } = await openApp(1);
     try {
       await waitLive(page);
       await page.locator('#conversations li', { hasText: a.title }).first().click();
-      await page.waitForFunction(
-        () => document.querySelectorAll('.msg').length > 0,
-        undefined,
-        { timeout: 10_000 },
-      );
+      await page.waitForFunction(() => document.querySelectorAll('.msg').length > 0, undefined, {
+        timeout: 10_000,
+      });
 
       // Hold the catch-up fetch open long enough to switch conversations underneath it.
       let sinceRequests = 0;
@@ -86,7 +90,10 @@ describe('UI: catch-up after a reconnect', () => {
         state.ws?.close();
       });
       await post('/api/messages', {
-        conversationId: a.id, senderId: 2, body: gapped, clientId: unique('gap'),
+        conversationId: a.id,
+        senderId: 2,
+        body: gapped,
+        clientId: unique('gap'),
       });
 
       // Wait for the reconnect to start its catch-up, then navigate away mid-flight.
@@ -127,16 +134,12 @@ describe('UI: the paged inbox', () => {
 
       await page.click('#loadMoreConversations');
       await page.waitForFunction(
-        (before) =>
-          document.querySelectorAll('#conversations li:not(.load-more)').length > before,
+        (before) => document.querySelectorAll('#conversations li:not(.load-more)').length > before,
         firstPage,
         { timeout: 15_000 },
       );
 
-      assert.ok(
-        (await rows()) > firstPage,
-        'clicking load more should append the next page',
-      );
+      assert.ok((await rows()) > firstPage, 'clicking load more should append the next page');
     } finally {
       await ctx.close();
     }
@@ -150,7 +153,10 @@ describe('UI: a conversation that fails to open', () => {
     // nothing but an unhandled rejection in the console.
     const conv = await freshConversation([1, 2], unique('ui-openfail'));
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 2, body: 'hello', clientId: unique('of'),
+      conversationId: conv.id,
+      senderId: 2,
+      body: 'hello',
+      clientId: unique('of'),
     });
 
     const { ctx, page } = await openApp(1);

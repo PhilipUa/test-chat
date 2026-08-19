@@ -27,6 +27,24 @@ export function unique(prefix) {
   return `${prefix}-${process.hrtime.bigint().toString(36)}`;
 }
 
+/**
+ * Runs `request` and, if it comes back 429, honours Retry-After once and retries.
+ *
+ * The one spelling of the wait — Retry-After is whole seconds, plus a small buffer for clock skew
+ * between the limiter's window and ours. This pattern used to live as four verbatim copies (one of
+ * which had quietly diverged); every helper that talks to a metered endpoint goes through here.
+ * The result may still be a 429 — what that means is the caller's decision, so callers must check
+ * the status rather than assume the retry succeeded.
+ */
+export async function retryOn429(request) {
+  let res = await request();
+  if (res.status === 429) {
+    await sleep((Number(res.headers.get('retry-after')) || 1) * 1000 + 250);
+    res = await request();
+  }
+  return res;
+}
+
 /** Waits for the API to be reachable and to report Redis healthy. */
 export async function waitForApi(timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
@@ -64,13 +82,12 @@ export async function freshConversation(participantIds = [1, 2], title = unique(
   // The route treats the first id as the creator, so put the chosen one first.
   const ordered = [creator, ...participantIds.filter((id) => id !== creator)];
 
-  let res = await post('/api/conversations', { title, participantIds: ordered });
-  if (res.status === 429) {
-    // Honour the limiter rather than failing the test for the wrong reason.
-    await sleep((Number(res.headers.get('retry-after')) || 1) * 1000 + 250);
-    res = await post('/api/conversations', { title, participantIds: ordered });
-  }
-  if (res.status !== 201) throw new Error(`could not create conversation: ${res.status} ${res.text}`);
+  // Honour the limiter rather than failing the test for the wrong reason.
+  const res = await retryOn429(() =>
+    post('/api/conversations', { title, participantIds: ordered }),
+  );
+  if (res.status !== 201)
+    throw new Error(`could not create conversation: ${res.status} ${res.text}`);
   return res.body;
 }
 
@@ -87,8 +104,22 @@ export async function wsClient(userId, conversationIds) {
   });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('ws open timeout')), 10_000);
-    ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-    ws.addEventListener('error', (e) => { clearTimeout(timer); reject(new Error('ws error')); }, { once: true });
+    ws.addEventListener(
+      'open',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+    ws.addEventListener(
+      'error',
+      () => {
+        clearTimeout(timer);
+        reject(new Error('ws error'));
+      },
+      { once: true },
+    );
   });
 
   const client = {
@@ -142,13 +173,15 @@ export async function conversationsOf(userId, { limit, cursor } = {}) {
   const query = new URLSearchParams({ userId: String(userId) });
   if (limit !== undefined) query.set('limit', String(limit));
   if (cursor) query.set('cursor', cursor);
-  let res = await get(`/api/conversations?${query}`);
+  // List reads are metered too, and the presence helpers below poll this endpoint several times a
+  // second. Honour Retry-After rather than returning an empty inbox: a throttled poll that looks
+  // like "no conversations" fails the caller's assertion for entirely the wrong reason.
+  const res = await retryOn429(() => get(`/api/conversations?${query}`));
   if (res.status === 429) {
-    // List reads are metered too, and the presence helpers below poll this endpoint several times a
-    // second. Honour Retry-After rather than returning an empty inbox: a throttled poll that looks
-    // like "no conversations" fails the caller's assertion for entirely the wrong reason.
-    await sleep((Number(res.headers.get('retry-after')) || 1) * 1000 + 250);
-    res = await get(`/api/conversations?${query}`);
+    // Still throttled after honouring Retry-After. Returning [] here is the exact wrong-reason
+    // failure the retry exists to prevent — the caller would assert on an empty inbox with no
+    // trace of throttling — so fail the way the other helpers do: loudly, with the status.
+    throw new Error(`inbox read throttled twice for user ${userId}: ${res.status} ${res.text}`);
   }
   if (Array.isArray(res.body)) return res.body;
   return res.body?.conversations ?? [];
@@ -185,12 +218,8 @@ export async function waitUntilOffline(viewerId, conversationId, userId, timeout
  * This honours a 429's Retry-After once and throws with the status otherwise.
  */
 export async function sendMessage(payload) {
-  let res = await post('/api/messages', payload);
-  if (res.status === 429) {
-    await sleep((Number(res.headers.get('retry-after')) || 1) * 1000 + 250);
-    // Same clientId, so the retry is the idempotent path rather than a second message.
-    res = await post('/api/messages', payload);
-  }
+  // Same clientId on the retry, so it is the idempotent path rather than a second message.
+  const res = await retryOn429(() => post('/api/messages', payload));
   if (res.status !== 201 && res.status !== 200) {
     throw new Error(`send failed: ${res.status} ${res.text}`);
   }
@@ -214,13 +243,8 @@ export async function seedMessages(conversationId, count, senderIds = [1, 2, 3])
       body: `page-msg-${i}`,
       clientId: unique('seed'),
     };
-    let res = await post('/api/messages', payload);
-    if (res.status === 429) {
-      const wait = (Number(res.headers.get('retry-after')) || 1) * 1000 + 250;
-      await sleep(wait);
-      // Same clientId, so this is the idempotent retry path rather than a new message.
-      res = await post('/api/messages', payload);
-    }
+    // Same clientId on the retry, so it is the idempotent path rather than a new message.
+    const res = await retryOn429(() => post('/api/messages', payload));
     if (res.status >= 400) throw new Error(`seed send failed: ${res.status} ${res.text}`);
     sent.push(res.body);
   }

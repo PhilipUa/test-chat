@@ -72,8 +72,22 @@ async function churnOnce(conversationId, userId) {
   try {
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('open timeout')), 10_000);
-      ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-      ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('ws error')); }, { once: true });
+      ws.addEventListener(
+        'open',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+      ws.addEventListener(
+        'error',
+        () => {
+          clearTimeout(timer);
+          reject(new Error('ws error'));
+        },
+        { once: true },
+      );
     });
     ws.addEventListener('error', () => {});
     ws.send(JSON.stringify({ type: 'subscribe', userId, conversationIds: [conversationId] }));
@@ -96,8 +110,22 @@ async function churnRace(conversationId, userId) {
   try {
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('open timeout')), 10_000);
-      ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-      ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('ws error')); }, { once: true });
+      ws.addEventListener(
+        'open',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+      ws.addEventListener(
+        'error',
+        () => {
+          clearTimeout(timer);
+          reject(new Error('ws error'));
+        },
+        { once: true },
+      );
     });
     ws.addEventListener('error', () => {});
     ws.send(JSON.stringify({ type: 'subscribe', userId, conversationIds: [conversationId] }));
@@ -113,7 +141,8 @@ console.log(`  soaking for ${MINUTES} minute(s) with ${CHURN} concurrent churn w
 
 const conversations = [];
 for (let i = 0; i < 3; i++) {
-  const conv = (await jpost('/api/conversations', { title: uid('soak'), participantIds: [1, 2] })).body;
+  const conv = (await jpost('/api/conversations', { title: uid('soak'), participantIds: [1, 2] }))
+    .body;
   if (conv?.id) conversations.push(conv.id);
 }
 if (!conversations.length) {
@@ -162,7 +191,10 @@ const workers = Array.from({ length: CHURN }, async (_, w) => {
     cycles += 1;
 
     const res = await jpost('/api/messages', {
-      conversationId, senderId: userId, body: uid('soak-msg'), clientId: uid('soak'),
+      conversationId,
+      senderId: userId,
+      body: uid('soak-msg'),
+      clientId: uid('soak'),
     });
     if (res.status === 201) sends += 1;
     else if (res.status === 429) throttled += 1;
@@ -183,7 +215,9 @@ const after = await snapshot();
 console.log(
   `  final:    ${[...after.entries()].map(([id, s]) => `${id}=${s.connections}c/${s.channels}ch/${s.memoryMb}MB`).join('  ')}`,
 );
-console.log(`  did ${cycles} connect/close cycles (${races} of them the subscribe race), ${sends} sends, ${throttled} throttled`);
+console.log(
+  `  did ${cycles} connect/close cycles (${races} of them the subscribe race), ${sends} sends, ${throttled} throttled`,
+);
 
 check(
   total(after, 'connections') <= total(baseline, 'connections'),

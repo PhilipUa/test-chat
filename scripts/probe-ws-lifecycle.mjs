@@ -38,8 +38,22 @@ async function raceOnce(conversationIds) {
   const ws = new WebSocket(BASE.replace(/^http/, 'ws') + '/');
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('ws open timeout')), 10_000);
-    ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-    ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('ws error')); }, { once: true });
+    ws.addEventListener(
+      'open',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+    ws.addEventListener(
+      'error',
+      () => {
+        clearTimeout(timer);
+        reject(new Error('ws error'));
+      },
+      { once: true },
+    );
   });
   ws.send(JSON.stringify({ type: 'subscribe', userId: USER_ID, conversationIds }));
   ws.close();
@@ -51,7 +65,9 @@ console.log(
   `instance ${before.instanceId}: ${before.subscribedConversations} channel(s), ` +
     `${before.connections} connection(s)`,
 );
-console.log(`racing ${ROUNDS} subscribe/close rounds over ${conversationIds.length} conversations…`);
+console.log(
+  `racing ${ROUNDS} subscribe/close rounds over ${conversationIds.length} conversations…`,
+);
 
 for (let round = 0; round < ROUNDS; round++) {
   await raceOnce(conversationIds);

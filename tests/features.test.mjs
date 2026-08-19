@@ -46,7 +46,10 @@ describe('tasks/rate-limiting.md', () => {
     const retryAfter = limited.headers.get('retry-after');
     assert.ok(retryAfter, 'a 429 must carry Retry-After');
     const seconds = Number(retryAfter);
-    assert.ok(Number.isInteger(seconds) && seconds >= 1, `Retry-After should be whole seconds, got ${retryAfter}`);
+    assert.ok(
+      Number.isInteger(seconds) && seconds >= 1,
+      `Retry-After should be whole seconds, got ${retryAfter}`,
+    );
     assert.ok(seconds <= 10, `Retry-After should be within the window, got ${seconds}`);
 
     // ~5 per 10s: allow a little slack so the test isn't brittle, but catch an order-of-magnitude
@@ -64,7 +67,10 @@ describe('tasks/rate-limiting.md', () => {
     let alice;
     for (let i = 0; i < 12; i++) {
       alice = await post('/api/messages', {
-        conversationId: conv.id, senderId: 1, body: `a${i}`, clientId: unique('a'),
+        conversationId: conv.id,
+        senderId: 1,
+        body: `a${i}`,
+        clientId: unique('a'),
       });
       if (alice.status === 429) break;
     }
@@ -72,7 +78,10 @@ describe('tasks/rate-limiting.md', () => {
 
     // Bob, in the same conversation, must be unaffected.
     const bob = await post('/api/messages', {
-      conversationId: conv.id, senderId: 2, body: 'bob still talks', clientId: unique('b'),
+      conversationId: conv.id,
+      senderId: 2,
+      body: 'bob still talks',
+      clientId: unique('b'),
     });
     assert.equal(bob.status, 201, 'a throttled user must not throttle the room');
   });
@@ -84,14 +93,20 @@ describe('tasks/rate-limiting.md', () => {
     let limited;
     for (let i = 0; i < 12; i++) {
       limited = await post('/api/messages', {
-        conversationId: a.id, senderId: 1, body: `x${i}`, clientId: unique('x'),
+        conversationId: a.id,
+        senderId: 1,
+        body: `x${i}`,
+        clientId: unique('x'),
       });
       if (limited.status === 429) break;
     }
     assert.equal(limited.status, 429);
 
     const other = await post('/api/messages', {
-      conversationId: b.id, senderId: 1, body: 'different room', clientId: unique('y'),
+      conversationId: b.id,
+      senderId: 1,
+      body: 'different room',
+      clientId: unique('y'),
     });
     assert.equal(other.status, 201);
   });
@@ -99,7 +114,10 @@ describe('tasks/rate-limiting.md', () => {
   it('reports remaining quota, and lets you send again after the window', async () => {
     const conv = await freshConversation();
     const first = await post('/api/messages', {
-      conversationId: conv.id, senderId: 1, body: 'first', clientId: unique('r'),
+      conversationId: conv.id,
+      senderId: 1,
+      body: 'first',
+      clientId: unique('r'),
     });
     assert.equal(first.headers.get('x-ratelimit-limit'), '5');
     assert.equal(first.headers.get('x-ratelimit-remaining'), '4');
@@ -107,7 +125,10 @@ describe('tasks/rate-limiting.md', () => {
     let limited;
     for (let i = 0; i < 12; i++) {
       limited = await post('/api/messages', {
-        conversationId: conv.id, senderId: 1, body: `fill ${i}`, clientId: unique('r'),
+        conversationId: conv.id,
+        senderId: 1,
+        body: `fill ${i}`,
+        clientId: unique('r'),
       });
       if (limited.status === 429) break;
     }
@@ -117,7 +138,10 @@ describe('tasks/rate-limiting.md', () => {
     const waitMs = Number(limited.headers.get('retry-after')) * 1000 + 500;
     await sleep(waitMs);
     const afterWindow = await post('/api/messages', {
-      conversationId: conv.id, senderId: 1, body: 'window reopened', clientId: unique('r'),
+      conversationId: conv.id,
+      senderId: 1,
+      body: 'window reopened',
+      clientId: unique('r'),
     });
     assert.equal(afterWindow.status, 201, 'the window should have slid open again');
   });
@@ -130,7 +154,10 @@ describe('tasks/rate-limiting.md', () => {
       assert.equal(res.status, 403);
     }
     const alice = await post('/api/messages', {
-      conversationId: conv.id, senderId: 1, body: 'still fine', clientId: unique('q'),
+      conversationId: conv.id,
+      senderId: 1,
+      body: 'still fine',
+      clientId: unique('q'),
     });
     assert.equal(alice.status, 201);
   });
@@ -141,8 +168,10 @@ describe('tasks/search.md', () => {
     const conv = await freshConversation([1, 2], unique('搜索 Search Room'));
     const token = `zephyr${Date.now()}`;
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 1,
-      body: `the ${token} manifold needs recalibrating`, clientId: unique('s'),
+      conversationId: conv.id,
+      senderId: 1,
+      body: `the ${token} manifold needs recalibrating`,
+      clientId: unique('s'),
     });
 
     const res = await get(`/api/search?q=${token}&userId=1`);
@@ -159,8 +188,10 @@ describe('tasks/search.md', () => {
     const conv = await freshConversation();
     const tag = `qx${Date.now()}`;
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 1,
-      body: `${tag} scheduling the quarterly meetings`, clientId: unique('s'),
+      conversationId: conv.id,
+      senderId: 1,
+      body: `${tag} scheduling the quarterly meetings`,
+      clientId: unique('s'),
     });
 
     // "meeting" should match the stored "meetings" via the text index.
@@ -172,7 +203,10 @@ describe('tasks/search.md', () => {
     const conv = await freshConversation();
     const token = `parsnip${Date.now()}`;
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 1, body: `about ${token}s in general`, clientId: unique('s'),
+      conversationId: conv.id,
+      senderId: 1,
+      body: `about ${token}s in general`,
+      clientId: unique('s'),
     });
 
     // A prefix of a word: Mongo's $text matches whole words, so this exercises the fallback.
@@ -189,7 +223,10 @@ describe('tasks/search.md', () => {
     const conv = await freshConversation([1, 2]);
     const secret = `classified${Date.now()}`;
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 1, body: `${secret} launch codes`, clientId: unique('s'),
+      conversationId: conv.id,
+      senderId: 1,
+      body: `${secret} launch codes`,
+      clientId: unique('s'),
     });
 
     const asParticipant = await get(`/api/search?q=${secret}&userId=1`);
@@ -201,7 +238,7 @@ describe('tasks/search.md', () => {
   });
 
   it('treats regex metacharacters as literal text', async () => {
-    const conv = await freshConversation();
+    await freshConversation();
     const res = await get(`/api/search?q=${encodeURIComponent('.*+?[](){}')}&userId=1`);
     // The point is that it does not 500 or match everything via an injected regex.
     assert.equal(res.status, 200);
@@ -217,8 +254,18 @@ describe('tasks/search.md', () => {
     const token = `narrow${Date.now()}`;
     const a = await freshConversation();
     const b = await freshConversation();
-    await post('/api/messages', { conversationId: a.id, senderId: 1, body: `${token} one`, clientId: unique('s') });
-    await post('/api/messages', { conversationId: b.id, senderId: 1, body: `${token} two`, clientId: unique('s') });
+    await post('/api/messages', {
+      conversationId: a.id,
+      senderId: 1,
+      body: `${token} one`,
+      clientId: unique('s'),
+    });
+    await post('/api/messages', {
+      conversationId: b.id,
+      senderId: 1,
+      body: `${token} two`,
+      clientId: unique('s'),
+    });
 
     const all = await get(`/api/search?q=${token}&userId=1`);
     assert.equal(all.body.results.length, 2);
@@ -291,10 +338,16 @@ describe('unread state (survives a reload, unlike the old client-side dot)', () 
   it('counts unread messages from others and clears on read', async () => {
     const conv = await freshConversation([1, 2]);
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 2, body: 'unread one', clientId: unique('u'),
+      conversationId: conv.id,
+      senderId: 2,
+      body: 'unread one',
+      clientId: unique('u'),
     });
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 2, body: 'unread two', clientId: unique('u'),
+      conversationId: conv.id,
+      senderId: 2,
+      body: 'unread two',
+      clientId: unique('u'),
     });
 
     let mine = (await conversationsOf(1)).find((c) => c.id === conv.id);
@@ -313,7 +366,10 @@ describe('unread state (survives a reload, unlike the old client-side dot)', () 
   it('does not count your own messages as unread', async () => {
     const conv = await freshConversation([1, 2]);
     await post('/api/messages', {
-      conversationId: conv.id, senderId: 1, body: 'mine', clientId: unique('u'),
+      conversationId: conv.id,
+      senderId: 1,
+      body: 'mine',
+      clientId: unique('u'),
     });
     const list = await conversationsOf(1);
     assert.equal(list.find((c) => c.id === conv.id).unreadCount, 0);
@@ -324,13 +380,19 @@ describe('unread state (survives a reload, unlike the old client-side dot)', () 
     const sent = [];
     for (let i = 0; i < 3; i++) {
       const res = await post('/api/messages', {
-        conversationId: conv.id, senderId: 2, body: `w${i}`, clientId: unique('w'),
+        conversationId: conv.id,
+        senderId: 2,
+        body: `w${i}`,
+        clientId: unique('w'),
       });
       sent.push(res.body.id);
     }
     await post(`/api/conversations/${conv.id}/read`, { userId: 1, messageId: sent[2] });
     // A stale receipt arriving late must not un-read things.
-    const stale = await post(`/api/conversations/${conv.id}/read`, { userId: 1, messageId: sent[0] });
+    const stale = await post(`/api/conversations/${conv.id}/read`, {
+      userId: 1,
+      messageId: sent[0],
+    });
     assert.equal(stale.body.lastReadMessageId, sent[2]);
   });
 
@@ -349,14 +411,21 @@ describe('conversation list', () => {
     const quiet = await freshConversation([1, 2], unique('quiet-room'));
     const busy = await freshConversation([1, 2], unique('busy-room'));
     await post('/api/messages', {
-      conversationId: busy.id, senderId: 2, body: 'hello', clientId: unique('b'),
+      conversationId: busy.id,
+      senderId: 2,
+      body: 'hello',
+      clientId: unique('b'),
     });
 
     const list = await conversationsOf(1);
     const quietRow = list.find((c) => c.id === quiet.id);
     const busyRow = list.find((c) => c.id === busy.id);
 
-    assert.equal(typeof quietRow.activityAt, 'string', 'a conversation with no messages needs one too');
+    assert.equal(
+      typeof quietRow.activityAt,
+      'string',
+      'a conversation with no messages needs one too',
+    );
     assert.equal(busyRow.activityAt, busyRow.lastMessage.createdAt);
     assert.ok(
       new Date(busyRow.activityAt) > new Date(quietRow.activityAt),
@@ -369,11 +438,17 @@ describe('conversation list', () => {
     const newer = await freshConversation([1, 2], unique('newer-room'));
 
     await post('/api/messages', {
-      conversationId: older.id, senderId: 2, body: 'older activity', clientId: unique('o'),
+      conversationId: older.id,
+      senderId: 2,
+      body: 'older activity',
+      clientId: unique('o'),
     });
     await sleep(50);
     await post('/api/messages', {
-      conversationId: newer.id, senderId: 2, body: 'newest activity', clientId: unique('n'),
+      conversationId: newer.id,
+      senderId: 2,
+      body: 'newest activity',
+      clientId: unique('n'),
     });
 
     const list = await conversationsOf(1);

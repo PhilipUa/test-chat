@@ -1,5 +1,9 @@
 FROM node:22-slim
 
+# Prisma detects the libssl version to pick its query engine; node:22-slim ships without OpenSSL,
+# and the fallback guesses 1.1.x — an engine the clients don't bundle.
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Dependencies first, so a source change doesn't reinstall them.
@@ -7,6 +11,12 @@ COPY package*.json ./
 RUN npm install
 
 COPY . .
+
+# Generate the Prisma clients for this platform. Compose bind-mounts ./src over the image's copy,
+# so in compose the host-generated clients (which include the Linux engines via binaryTargets)
+# win; this keeps the image correct when run standalone.
+RUN npx prisma generate --schema prisma/mysql/schema.prisma \
+ && npx prisma generate --schema prisma/mongo/schema.prisma
 
 EXPOSE 3000
 

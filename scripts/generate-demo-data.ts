@@ -10,21 +10,24 @@
  * Usage: docker compose exec api npx tsx scripts/generate-demo-data.ts [conversations] [perConversation]
  */
 import { config } from '../src/config.ts';
-import { closeMysql, queryRows, runWrite, sqlRows, waitForMysql } from '../src/db/mysql.ts';
-import {
-  closeMongo,
-  connectMongo,
-  ensureMongoIndexes,
-  messageBodies,
-  tokenizeBody,
-} from '../src/db/mongo.ts';
+import { Prisma, closeMysql, db, waitForMysql } from '../src/db/mysql.ts';
+import { closeMongo, connectMongo, ensureMongoIndexes, mongoDb } from '../src/db/mongo.ts';
+import { bodyTrigramsOf, tokenizeBody } from '../src/util/text.ts';
 
 const CONVERSATIONS = Number(process.argv[2] || 30);
 const PER_CONVERSATION = Number(process.argv[3] || 60);
 
 const SUBJECTS = [
-  'the migration', 'onboarding', 'the design review', 'invoice 4471', 'the staging deploy',
-  'quarterly planning', 'the flaky test', 'customer feedback', 'the API rewrite', 'pricing',
+  'the migration',
+  'onboarding',
+  'the design review',
+  'invoice 4471',
+  'the staging deploy',
+  'quarterly planning',
+  'the flaky test',
+  'customer feedback',
+  'the API rewrite',
+  'pricing',
 ];
 const PHRASES = [
   'can you take a look when you get a chance',
@@ -43,8 +46,8 @@ await waitForMysql();
 await connectMongo();
 await ensureMongoIndexes();
 
-const users = await queryRows<{ id: number }>('SELECT id FROM users ORDER BY id');
-const userIds = users.map((u) => Number(u.id));
+const users = await db.user.findMany({ select: { id: true }, orderBy: { id: 'asc' } });
+const userIds = users.map((u) => u.id);
 if (userIds.length < 2) throw new Error('need at least two seeded users');
 
 console.log(`generating ${CONVERSATIONS} conversations x ${PER_CONVERSATION} messages…`);
@@ -52,19 +55,18 @@ let totalMessages = 0;
 
 for (let c = 0; c < CONVERSATIONS; c++) {
   const subject = SUBJECTS[c % SUBJECTS.length];
-  const created = await runWrite('INSERT INTO conversations (title) VALUES (?)', [
-    `${subject} — thread ${c + 1}`,
-  ]);
-  const conversationId = Number(created.insertId);
+  const conversation = await db.conversation.create({
+    data: { title: `${subject} — thread ${c + 1}` },
+    select: { id: true },
+  });
+  const conversationId = conversation.id;
 
-  await runWrite(
-    `INSERT IGNORE INTO conversation_participants (conversation_id, user_id)
-     VALUES ${sqlRows(userIds.length, 2)}`,
-    userIds.flatMap((uid) => [conversationId, uid]),
-  );
+  await db.conversationParticipant.createMany({
+    data: userIds.map((userId) => ({ conversationId, userId })),
+    skipDuplicates: true,
+  });
 
-  const rows: unknown[][] = [];
-  const docs: any[] = [];
+  const docs: { conversationId: number; senderId: number; body: string; createdAt: Date }[] = [];
   // Space conversations by their own length, so the newest message always lands in the past.
   // Fixed 1-hour spacing put messages in the future once a conversation held more than 60 of them
   // (one per minute), which showed up as an inbox sorted by a timestamp that hadn't happened yet.
@@ -72,24 +74,30 @@ for (let c = 0; c < CONVERSATIONS; c++) {
   const baseTime = Date.now() - (CONVERSATIONS - c) * spacingMs;
 
   for (let m = 0; m < PER_CONVERSATION; m++) {
-    const senderId = userIds[m % userIds.length]!;
+    const senderId = userIds[m % userIds.length];
     const createdAt = new Date(baseTime + m * 60_000);
     const body = `${PHRASES[(c + m) % PHRASES.length]} (re: ${subject})`;
-    rows.push([conversationId, senderId, null, createdAt]);
     docs.push({ conversationId, senderId, body, createdAt });
   }
 
-  // One multi-row insert, then read the id range back — the ids must match the Mongo _ids.
-  const res = await runWrite(
-    `INSERT INTO messages (conversation_id, sender_id, client_id, created_at)
-     VALUES ${sqlRows(rows.length, 4)}`,
-    rows.flat(),
-  );
-  const firstId = Number(res.insertId);
+  // One multi-row insert, then read the first generated id back — the ids must match the Mongo
+  // _ids, and MySQL guarantees a multi-row insert's ids are contiguous starting at
+  // LAST_INSERT_ID(). Raw because createMany doesn't return ids; the interactive transaction pins
+  // one connection so LAST_INSERT_ID() is this insert's.
+  const firstId = await db.$transaction(async (tx) => {
+    await tx.$executeRaw`
+      INSERT INTO messages (conversation_id, sender_id, client_id, created_at)
+      VALUES ${Prisma.join(
+        docs.map((d) => Prisma.sql`(${d.conversationId}, ${d.senderId}, NULL, ${d.createdAt})`),
+      )}`;
+    const rows = await tx.$queryRaw<{ id: bigint }[]>`SELECT LAST_INSERT_ID() AS id`;
+    return Number(rows[0]?.id ?? 0);
+  });
+  if (!firstId) throw new Error('could not read back the inserted message id range');
 
-  await messageBodies().insertMany(
-    docs.map((d, i) => ({
-      _id: firstId + i,
+  await mongoDb.messageBody.createMany({
+    data: docs.map((d, i) => ({
+      id: firstId + i,
       conversationId: d.conversationId,
       senderId: d.senderId,
       body: d.body,
@@ -100,9 +108,14 @@ for (let c = 0; c < CONVERSATIONS; c++) {
         config.search.maxTokenLength,
         config.search.maxTokensPerMessage,
       ),
+      bodyTrigrams: bodyTrigramsOf(
+        d.body,
+        config.search.maxTokenLength,
+        config.search.maxTokensPerMessage,
+        config.search.maxTrigramsPerMessage,
+      ),
     })),
-    { ordered: false },
-  );
+  });
 
   totalMessages += docs.length;
 }

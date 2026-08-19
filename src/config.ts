@@ -1,4 +1,4 @@
-import { loadRateLimitRules } from './config/rate-limit-rules.ts';
+import { resolveRateLimitRules } from './config/rate-limit-rules.ts';
 
 function num(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -57,11 +57,11 @@ export const config = {
   /**
    * Rate limiting rules — tasks/rate-limiting.md.
    *
-   * The numbers are policy rather than code, so they live in `rate-limit.config.json` (env vars still
-   * win over the file, and the built-in defaults apply when there is no file at all). See
-   * config/rate-limit-rules.ts for what each bucket meters and why its default is what it is.
+   * Defaults live in code (config/rate-limit-rules.ts, next to what each bucket meters and why its
+   * number is what it is); env vars override per deployment. Each route wires its rule into the
+   * rateLimit middleware where the route is declared.
    */
-  rateLimit: loadRateLimitRules(),
+  rateLimit: resolveRateLimitRules(process.env),
 
   search: {
     defaultLimit: num('SEARCH_LIMIT', 25),
@@ -73,6 +73,14 @@ export const config = {
     maxTokenLength: num('SEARCH_MAX_TOKEN_LENGTH', 32),
     /** Cap tokens per message so one enormous message can't bloat its index entry. */
     maxTokensPerMessage: num('SEARCH_MAX_TOKENS_PER_MESSAGE', 200),
+    /** Same cap for the fuzzy trigram index, which is denser — a token yields several trigrams. */
+    maxTrigramsPerMessage: num('SEARCH_MAX_TRIGRAMS_PER_MESSAGE', 600),
+    /**
+     * How many trigram candidates the fuzzy strategy ranks. Common trigrams match a lot of
+     * messages, so the fetch is capped and ranking happens over that bounded set — the cost of a
+     * typo'd query stays flat as history grows.
+     */
+    fuzzyCandidates: num('SEARCH_FUZZY_CANDIDATES', 200),
   },
 
   ws: {

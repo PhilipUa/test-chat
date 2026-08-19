@@ -8,8 +8,8 @@ import { withFallback } from '../util/resilience.ts';
  * Rate limiting — tasks/rate-limiting.md
  *
  * Requirements and how each is met:
- *  - ~5 messages / 10s per conversation  -> configurable window + limit, set in
- *                                           rate-limit.config.json rather than in code
+ *  - ~5 messages / 10s per conversation  -> configurable window + limit: defaults in
+ *                                           config/rate-limit-rules.ts, env vars override
  *  - 429 + Retry-After                   -> `retryAfterMs` is the exact time until a slot frees
  *  - per user, not global                -> key is user:conversation, so one noisy sender only
  *                                           ever throttles themselves
@@ -20,9 +20,9 @@ import { withFallback } from '../util/resilience.ts';
  * is a cheap way to generate unbounded read load. Reads now have their own buckets — separate
  * from sends, because the costs and the sensible limits are different.
  *
- * Five buckets, one mechanism: send, search, reads, create, typing. What each one meters, how it is
- * keyed and why its numbers are what they are lives in config/rate-limit-rules.ts, alongside the
- * config file that sets them.
+ * Five buckets, one mechanism: send, search, reads, create, typing. What each one meters and why
+ * its numbers are what they are lives in config/rate-limit-rules.ts; how each is keyed lives with
+ * the route (or WS handler) that charges it, passed in as a custom config.
  *
  * Sliding window over a sorted set rather than a fixed window: a fixed window lets someone send
  * 2x the limit across a window boundary, and can't produce an honest Retry-After.
@@ -83,6 +83,15 @@ export interface RateLimitResult {
 
 let attemptCounter = 0;
 
+/**
+ * Charges one request against `bucketKey` under `rule`, the custom config the caller wires in —
+ * routes pass theirs through the rateLimit middleware, the WS typing path calls this directly.
+ * The key is namespaced here so every bucket lives under `relay:rl:` in Redis.
+ */
+export function consumeQuota(bucketKey: string, rule: RateLimitRule): Promise<RateLimitResult> {
+  return consume(`relay:rl:${bucketKey}`, rule);
+}
+
 function consume(key: string, { limit, windowMs }: RateLimitRule): Promise<RateLimitResult> {
   // Unique per attempt so two sends in the same millisecond both count. A ZADD with a duplicate
   // member would overwrite rather than add, silently granting a free send.
@@ -110,48 +119,13 @@ function consume(key: string, { limit, windowMs }: RateLimitRule): Promise<RateL
       member,
     )) as [number, number, number];
 
-    return { allowed: allowed === ALLOW, limit, windowMs, remaining, retryAfterMs, degraded: false };
+    return {
+      allowed: allowed === ALLOW,
+      limit,
+      windowMs,
+      remaining,
+      retryAfterMs,
+      degraded: false,
+    };
   });
-}
-
-/** Quota for sending a message: per user, per conversation. */
-export function consumeSendQuota(userId: number, conversationId: number): Promise<RateLimitResult> {
-  return consume(`relay:rl:send:${userId}:${conversationId}`, config.rateLimit.send);
-}
-
-/**
- * Quota for searching: per user, across all their conversations, because a search spans them.
- * Exposed as a full result so the route can surface Retry-After like sends do.
- */
-export function consumeSearchQuota(userId: number): Promise<RateLimitResult> {
-  return consume(`relay:rl:search:${userId}`, config.rateLimit.search);
-}
-
-/**
- * Quota for the list reads — the inbox and message history.
- *
- * One bucket for both, per user: they are the same kind of work (a bounded page for one user) and a
- * client that is looping does it over whichever endpoint is convenient, so metering them separately
- * would just double the allowance a loop gets. Far looser than search, which is the only read whose
- * cost grows with how much history the caller has.
- */
-export function consumeReadQuota(userId: number): Promise<RateLimitResult> {
-  return consume(`relay:rl:reads:${userId}`, config.rateLimit.reads);
-}
-
-/** Quota for creating conversations. Cheap per call, but unbounded growth isn't free. */
-export function consumeCreateQuota(userId: number): Promise<RateLimitResult> {
-  return consume(`relay:rl:create:${userId}`, config.rateLimit.create);
-}
-
-/** Looser quota for typing frames — same mechanism, separate bucket. */
-export async function consumeTypingQuota(
-  userId: number,
-  conversationId: number,
-): Promise<boolean> {
-  const result = await consume(
-    `relay:rl:typing:${userId}:${conversationId}`,
-    config.rateLimit.typing,
-  );
-  return result.allowed;
 }

@@ -67,17 +67,23 @@ export function validateRules(rules) {
   }
   for (const rule of rules) {
     if (!SIGNALS[rule.signal]) {
-      problems.push(`unknown signal "${rule.signal}" — expected one of ${KNOWN_SIGNALS.join(', ')}`);
+      problems.push(
+        `unknown signal "${rule.signal}" — expected one of ${KNOWN_SIGNALS.join(', ')}`,
+      );
       continue;
     }
     if (rule.aggregate && !AGGREGATES[rule.aggregate]) {
-      problems.push(`unknown aggregate "${rule.aggregate}" for ${rule.signal} — expected one of ${KNOWN_AGGREGATES.join(', ')}`);
+      problems.push(
+        `unknown aggregate "${rule.aggregate}" for ${rule.signal} — expected one of ${KNOWN_AGGREGATES.join(', ')}`,
+      );
     }
     if (!Number.isFinite(rule.up) || !Number.isFinite(rule.down)) {
       problems.push(`${rule.signal} needs numeric up and down watermarks`);
     } else if (rule.down >= rule.up) {
       // Touching watermarks are the classic way to build an oscillator.
-      problems.push(`${rule.signal} has down (${rule.down}) at or above up (${rule.up}) — leave a gap, or it will flap`);
+      problems.push(
+        `${rule.signal} has down (${rule.down}) at or above up (${rule.up}) — leave a gap, or it will flap`,
+      );
     }
   }
   return problems;
@@ -93,7 +99,14 @@ export function validateRules(rules) {
  * @param {number} [input.cooldownRemainingMs]
  * @returns {{target: number, reason: string, signals: Array<object>}}
  */
-export function decideScale({ replicas, metrics = [], rules = [], min, max, cooldownRemainingMs = 0 }) {
+export function decideScale({
+  replicas,
+  metrics = [],
+  rules = [],
+  min,
+  max,
+  cooldownRemainingMs = 0,
+}) {
   if (!rules.length) throw new Error('autoscaling needs at least one rule');
 
   for (const rule of rules) {
@@ -107,7 +120,11 @@ export function decideScale({ replicas, metrics = [], rules = [], min, max, cool
   // Nothing is answering — that is a job for the health check and the restart policy, not for a scaler
   // reasoning about load it cannot see. Ask for the floor and let the stack come back.
   if (replicas === 0 || metrics.length === 0) {
-    return { target: min, reason: `no replica answered; asking for the minimum of ${min}`, signals: [] };
+    return {
+      target: min,
+      reason: `no replica answered; asking for the minimum of ${min}`,
+      signals: [],
+    };
   }
 
   const signals = rules.map((rule) => {
@@ -115,7 +132,9 @@ export function decideScale({ replicas, metrics = [], rules = [], min, max, cool
     const aggregateName = rule.aggregate ?? 'mean';
     const aggregate = AGGREGATES[aggregateName];
     if (!aggregate) {
-      throw new Error(`unknown aggregate "${aggregateName}" — expected one of ${Object.keys(AGGREGATES).join(', ')}`);
+      throw new Error(
+        `unknown aggregate "${aggregateName}" — expected one of ${Object.keys(AGGREGATES).join(', ')}`,
+      );
     }
 
     const value = aggregate(metrics.map((m) => spec.read(m)));
@@ -131,8 +150,10 @@ export function decideScale({ replicas, metrics = [], rules = [], min, max, cool
       proportional: rule.proportional ?? spec.proportional,
       verdict,
       describe() {
-        return `${aggregateName} ${this.signal} ${this.value.toFixed(1)}${this.unit} per replica ` +
-          `(up>${this.up}${this.unit} down<${this.down}${this.unit})`;
+        return (
+          `${aggregateName} ${this.signal} ${this.value.toFixed(1)}${this.unit} per replica ` +
+          `(up>${this.up}${this.unit} down<${this.down}${this.unit})`
+        );
       },
     };
   });
@@ -158,9 +179,12 @@ export function decideScale({ replicas, metrics = [], rules = [], min, max, cool
   if (blocking.length) {
     // Worth distinguishing: every signal sitting comfortably in band is the steady state, whereas some
     // wanting to shrink and others refusing is the interesting case to see in a log.
-    const settled = blocking.length === signals.length && signals.every((s) => s.verdict === 'hold');
+    const settled =
+      blocking.length === signals.length && signals.every((s) => s.verdict === 'hold');
     const detail = blocking.map((s) => s.describe()).join('; ');
-    return hold(settled ? `within the watermarks — ${detail}` : `not every rule wants to shrink — ${detail}`);
+    return hold(
+      settled ? `within the watermarks — ${detail}` : `not every rule wants to shrink — ${detail}`,
+    );
   }
 
   if (replicas <= min) {
