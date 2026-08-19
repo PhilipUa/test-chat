@@ -74,7 +74,8 @@ src/
                             in and out, no business logic. Raw escape hatches (the inbox summary
                             SQL, $text/prefix search) live here, documented at the call site.
   db/                       the Prisma clients, their lifecycle, and the boot-time migrate runner
-  generated/                Prisma clients (gitignored; `npm run prisma:generate`)
+  (repo root)/generated/    Prisma clients (gitignored; `npm run prisma:generate`). Outside
+                            src/ because compose bind-mounts ./src and would mask them.
   ws/  util/                unchanged
 ```
 

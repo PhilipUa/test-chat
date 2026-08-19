@@ -7,9 +7,9 @@
 
 generator client {
   provider = "prisma-client-js"
-  // Under src/ on purpose — same reasoning as the MySQL schema: ./src is bind-mounted, so the
-  // host-generated client is the one the container runs.
-  output        = "../../src/generated/prisma-mongo"
+  // Outside ./src — same reasoning as the MySQL schema: that directory is bind-mounted, so a
+  // client generated into it inside the image would be masked by the host's copy.
+  output        = "../../generated/prisma-mongo"
   binaryTargets = ["native", "linux-arm64-openssl-3.0.x", "debian-openssl-3.0.x"]
 }
 

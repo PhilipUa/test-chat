@@ -19,9 +19,9 @@ talks to a database client directly (user request). Repositories hold no busines
 
 ```
 prisma/
-  mysql/schema.prisma          datasource MYSQL_URL, output src/generated/prisma-mysql
+  mysql/schema.prisma          datasource MYSQL_URL, output generated/prisma-mysql
   mysql/migrations/0_init/     baseline DDL = the schema the old runner converged on
-  mongo/schema.prisma          datasource MONGO_URL, output src/generated/prisma-mongo
+  mongo/schema.prisma          datasource MONGO_URL, output generated/prisma-mongo
 src/db/
   mysql.ts                     Prisma MySQL client + waitForMysql/close + isDuplicateKeyError (P2002)
   mongo.ts                     Prisma Mongo client + waitFor/close + index creation + tokenizeBody
@@ -39,8 +39,13 @@ src/repositories/
 ## Decisions and their reasons
 
 - **Two schemas, two generated clients.** Prisma supports one datasource per schema. Outputs go
-  under `src/generated/` (gitignored) because compose bind-mounts `./src`, so clients generated on
-  the host are the ones the container runs; `binaryTargets` includes the container's Linux engines.
+  under `generated/` (gitignored), **outside** every bind-mounted path. The first attempt put them
+  under `src/generated/` on the reasoning that compose bind-mounts `./src`, so host-generated
+  clients would be the ones the container runs. That reasoning was backwards: the mount *masks* the
+  clients the image builds, so a fresh clone or a CI checkout — where the gitignored directory does
+  not exist — starts a container whose Prisma client is missing. CI caught it
+  (`Cannot find module '/app/src/generated/prisma-mongo/index.js'`). `binaryTargets` includes the
+  container's Linux engines.
 - **MySQL migrations**: baseline `0_init` equals the schema the old idempotent runner produced.
   At boot: if the tables exist but `_prisma_migrations` doesn't, run
   `prisma migrate resolve --applied 0_init`, then `prisma migrate deploy` (advisory-locked by

@@ -1,4 +1,4 @@
-import { PrismaClient } from '../generated/prisma-mongo/index.js';
+import { PrismaClient } from '../../generated/prisma-mongo/index.js';
 
 /**
  * The Mongo Prisma client and its lifecycle.

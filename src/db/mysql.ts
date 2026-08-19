@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient } from '../generated/prisma-mysql/index.js';
+import { Prisma, PrismaClient } from '../../generated/prisma-mysql/index.js';
 
 /**
  * The MySQL Prisma client and its lifecycle.

@@ -4,10 +4,12 @@
 
 generator client {
   provider = "prisma-client-js"
-  // Under src/ on purpose: compose bind-mounts ./src, so the client generated on the host is the
-  // one the container runs. The Linux targets are the container's engines (arm64 for Apple-silicon
-  // Docker, x64 for CI); "native" is the host's.
-  output        = "../../src/generated/prisma-mysql"
+  // Deliberately NOT under ./src: compose bind-mounts that directory, so anything generated into
+  // it inside the image is masked by the host's copy — and since generated code is gitignored, a
+  // fresh clone (or CI) then starts a container whose Prisma client does not exist. ./generated is
+  // not mounted, so the image's client is the one the container runs. The Linux targets are the
+  // container's engines (arm64 for Apple-silicon Docker, x64 for CI); "native" is the host's.
+  output        = "../../generated/prisma-mysql"
   binaryTargets = ["native", "linux-arm64-openssl-3.0.x", "debian-openssl-3.0.x"]
 }
 

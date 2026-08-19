@@ -16,7 +16,7 @@ import tseslint from 'typescript-eslint';
  */
 export default tseslint.config(
   {
-    ignores: ['node_modules/', 'postman/', '.idea/', '.playwright-mcp/', 'src/generated/'],
+    ignores: ['node_modules/', 'postman/', '.idea/', '.playwright-mcp/', 'generated/'],
   },
   js.configs.recommended,
   {
